@@ -158,3 +158,31 @@ pub fn update_available_alert(current: &str, latest: &str) -> String {
         display(latest)
     )
 }
+
+pub fn weekly_resets_alert(items: &[(&str, &str, &str, &str, &str)]) -> String {
+    let heading = if items.len() == 1 {
+        "🎉 <b>[NOTICE] Weekly quota reset!</b>"
+    } else {
+        "🎉 <b>[NOTICE] Weekly quotas reset!</b>"
+    };
+
+    let mut lines = vec![
+        heading.to_string(),
+        "<i>Fufufu~ Quota replenished! Time to code lots and lots, onii-chan! (๑>ᴗ<๑)✨</i>".to_string(),
+    ];
+
+    for (name, provider, email, quota_name, reset_time) in items {
+        lines.push(format!(
+            "• Account: <b>{}</b> ({})\n  Email: <code>{}</code> · Quota: <b>{}</b>\n  Next reset: <b>{}</b>",
+            display(name),
+            display(provider),
+            display(email),
+            display(quota_name),
+            reset_time
+        ));
+    }
+    lines.push(
+        "<i>Let's do our best again this week! (ง •̀ω•́)ง</i>".to_string(),
+    );
+    lines.join("\n")
+}

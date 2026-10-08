@@ -14,6 +14,8 @@ On every startup, the bot sends an **ARMED** message to the configured chat befo
 - ⏳ **Weekly Quota Waste Warning**:
   Monitors enabled accounts returned by the usage-eligible providers API, across all pages. With **>30% remaining** and less than **24 hours**, **12 hours**, or **3 hours** until reset, warnings fire once per tier per account/quota/cycle. Reset timestamps within 60 seconds share an anchored cycle to tolerate upstream timestamp jitter; unlimited quotas are excluded. All accounts qualifying for the same warning tier within a polling cycle are batched into a single consolidated message.
   Quota warning reset deadlines are displayed in **UTC+7** (Asia/Ho_Chi_Minh); threshold calculations still use UTC instants.
+- 🎉 **Weekly Quota Reset Notice**:
+  Detects when an account's weekly quota cycle has reset (e.g. `resetAt` moves forward by $\ge 6$ hours). Batches all accounts that reset in the same polling cycle into a single celebratory message announcing the new reset deadline in **UTC+7**.
 - 🔑 **Codex Account Authentication Errors**:
   Alerts on Codex accounts returning `401 Unauthorized` or `403 Forbidden` (explicitly ignoring temporary `429 Too Many Requests` rate limits). Multiple errored or recovered accounts in the same polling cycle are batched into single consolidated messages.
 - 🎁 **Banked Reset Notifications**:

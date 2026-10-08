@@ -201,7 +201,7 @@ impl AlertEngine {
     {
         // Map tier -> list of formatted item lines
         let mut tier_items: HashMap<QuotaWarningTier, Vec<String>> = HashMap::new();
-
+        let mut reset_events: Vec<(&Connection, &str, String)> = Vec::new();
         for (conn, usage) in entries {
             let quotas = match &usage.quotas {
                 Some(q) => q,
@@ -219,18 +219,36 @@ impl AlertEngine {
                     Some(reset_at) => reset_at,
                     None => continue,
                 };
-                let cycle = self
+                let mut cycle_reset_detected = false;
+                let cycle = match self
                     .state
                     .quota_notified_tiers
-                    .entry((conn.id.clone(), quota_name.clone()))
-                    .or_insert((reset_at, None));
+                    .get_mut(&(conn.id.clone(), quota_name.clone()))
+                {
+                    Some(cycle) => {
+                        let reset_shift = reset_at.signed_duration_since(cycle.0);
+                        // If the reset timestamp jumped forward by at least 6 hours, a new cycle has started!
+                        if reset_shift >= Duration::hours(6) {
+                            *cycle = (reset_at, None);
+                            cycle_reset_detected = true;
+                        } else if reset_shift > Duration::seconds(60) {
+                            *cycle = (reset_at, None);
+                        } else if reset_shift < -Duration::seconds(60) {
+                            continue;
+                        }
+                        cycle
+                    }
+                    None => {
+                        // Initial baseline establishment (no reset alert on startup)
+                        self.state
+                            .quota_notified_tiers
+                            .entry((conn.id.clone(), quota_name.clone()))
+                            .or_insert((reset_at, None))
+                    }
+                };
 
-                // ponytail: reset timestamps within 60s share an anchored cycle; use an API cycle ID if provided.
-                let reset_shift = reset_at.signed_duration_since(cycle.0);
-                if reset_shift > Duration::seconds(60) {
-                    *cycle = (reset_at, None);
-                } else if reset_shift < -Duration::seconds(60) {
-                    continue;
+                if cycle_reset_detected {
+                    reset_events.push((conn, quota_name.as_str(), local_time(reset_at)));
                 }
 
                 let remaining_pct = match quota_detail.remaining_pct() {
@@ -284,8 +302,29 @@ impl AlertEngine {
                 }
             }
         }
-
         let mut alerts = Vec::new();
+
+        if !reset_events.is_empty() {
+            let names: Vec<String> = reset_events
+                .iter()
+                .map(|(c, ..)| c.display_name())
+                .collect();
+            let items: Vec<(&str, &str, &str, &str, &str)> = reset_events
+                .iter()
+                .zip(names.iter())
+                .map(|((c, q, r), name)| {
+                    (
+                        name.as_str(),
+                        c.provider.as_str(),
+                        c.email.as_deref().unwrap_or("N/A"),
+                        *q,
+                        r.as_str(),
+                    )
+                })
+                .collect();
+            alerts.push(crate::messages::weekly_resets_alert(&items));
+        }
+
         // Order by tier severity ascending (24h -> 12h -> 3h)
         for tier in [
             QuotaWarningTier::LessThan24h,
@@ -541,9 +580,18 @@ mod tests {
         for week in 1..=10 {
             let next_reset = reset + Duration::days(7 * week);
             let next_usage = weekly_usage(next_reset, 60.0);
+            // The jump forward into the next weekly cycle emits exactly 1 reset notice!
+            let reset_alerts =
+                engine.check_weekly_quotas([(&conn, &next_usage)], next_reset - Duration::days(7));
+            assert_eq!(reset_alerts.len(), 1);
+            assert!(reset_alerts[0].contains("Weekly quota reset!"));
+
+            // Further checks inside the cycle before warning tiers produce no extra alerts
             assert!(engine
-                .check_weekly_quotas([(&conn, &next_usage)], next_reset - Duration::days(7))
+                .check_weekly_quotas([(&conn, &next_usage)], next_reset - Duration::days(6))
                 .is_empty());
+
+            // Approaching expiration (<24h) emits the tier warning
             assert_eq!(
                 engine
                     .check_weekly_quotas([(&conn, &next_usage)], next_reset - Duration::hours(20))
@@ -742,5 +790,44 @@ mod tests {
         let alerts2 = engine.check_update(&update_v2);
         assert_eq!(alerts2.len(), 1);
         assert!(alerts2[0].contains("0.5.97"));
+    }
+
+    #[test]
+    fn weekly_resets_detect_forward_jump_and_batch_multiple_accounts() {
+        let mut engine = AlertEngine::new();
+        let conn1 = connection();
+        let mut conn2 = connection();
+        conn2.id = "account-2".into();
+        conn2.name = Some("Second Account".into());
+
+        let now = now();
+        let cycle1 = now + Duration::hours(10);
+        let usage1 = weekly_usage(cycle1, 20.0);
+
+        // Initial setup establishes baseline (no alert)
+        assert!(engine
+            .check_weekly_quotas([(&conn1, &usage1), (&conn2, &usage1)], now)
+            .is_empty());
+
+        // Jumps forward by 5 hours (< 6h threshold) -> not considered a new cycle
+        let small_jump = weekly_usage(cycle1 + Duration::hours(5), 20.0);
+        assert!(engine
+            .check_weekly_quotas([(&conn1, &small_jump)], now)
+            .is_empty());
+
+        // Jumps forward by 7 days (>= 6h threshold) for both accounts -> single batched alert
+        let next_cycle = cycle1 + Duration::days(7);
+        let next_usage = weekly_usage(next_cycle, 100.0);
+        let alerts =
+            engine.check_weekly_quotas([(&conn1, &next_usage), (&conn2, &next_usage)], now);
+        assert_eq!(alerts.len(), 1);
+        assert!(alerts[0].contains("Weekly quotas reset!"));
+        assert!(alerts[0].contains("account-1"));
+        assert!(alerts[0].contains("Second Account"));
+
+        // Subsequent poll with same reset timestamp produces no alert
+        assert!(engine
+            .check_weekly_quotas([(&conn1, &next_usage), (&conn2, &next_usage)], now)
+            .is_empty());
     }
 }

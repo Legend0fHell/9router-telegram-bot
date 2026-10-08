@@ -149,7 +149,17 @@ async fn main() -> anyhow::Result<()> {
     let update_preview = nine_router_bot::messages::update_available_alert("0.5.95", "0.5.96");
     previews.push(format!("<i>[PREVIEW ONLY]</i>\n\n{update_preview}"));
 
-    // 9. Synthetic kawaii daily leaderboard preview
+    // 9. Weekly quota reset preview
+    let reset_preview = nine_router_bot::messages::weekly_resets_alert(&[(
+        "Preview Sakura <Pro & test>",
+        "codex",
+        "sakura@example.com",
+        "weekly (7d)",
+        "2026-10-15 12:00:00 UTC+7",
+    )]);
+    previews.push(format!("<i>[PREVIEW ONLY]</i>\n\n{reset_preview}"));
+
+    // 10. Synthetic kawaii daily leaderboard preview
     let synthetic_stats = UsageStats {
         total_requests: 1850,
         total_prompt_tokens: 104_500_000,
