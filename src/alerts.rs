@@ -32,8 +32,8 @@ pub struct AlertState {
     pub quota_notified_tiers: HashMap<(String, String), (DateTime<Utc>, Option<QuotaWarningTier>)>,
     /// Key: connection_id -> last known banked reset count
     pub banked_resets: HashMap<String, i64>,
-    /// Whether auth token expiry has been alerted
-    pub auth_token_expiry_alerted: bool,
+    /// Whether the current login failure has been reported.
+    pub login_failure_alerted: bool,
     /// Last alerted update version string to prevent repeating notifications for the same version
     pub last_notified_update_version: Option<String>,
 }
@@ -397,18 +397,15 @@ impl AlertEngine {
         vec![crate::messages::banked_resets_alert(&items)]
     }
 
-    /// Warn once when the dashboard's 24-hour auth token has less than 3 hours left.
-    pub fn check_auth_token_expiry(&mut self, hours_remaining: Option<f64>) -> Vec<String> {
-        let mut alerts = Vec::new();
-        if let Some(hours) = hours_remaining {
-            if hours < 3.0 && !self.state.auth_token_expiry_alerted {
-                self.state.auth_token_expiry_alerted = true;
-                alerts.push(crate::messages::auth_token_expiry_alert(hours));
-            } else if hours >= 3.0 {
-                self.state.auth_token_expiry_alerted = false;
-            }
+    /// Warn once per login failure episode; successful login rearms the notice.
+    pub fn check_login_failure(&mut self, failed: bool) -> Vec<String> {
+        let notify = failed && !self.state.login_failure_alerted;
+        self.state.login_failure_alerted = failed;
+        if notify {
+            vec![crate::messages::login_failure_alert()]
+        } else {
+            Vec::new()
         }
-        alerts
     }
 
     /// Check for available 9router updates from /api/version
@@ -735,26 +732,13 @@ mod tests {
     }
 
     #[test]
-    fn token_expiry_warns_below_three_hours_and_rearms_on_refresh() {
+    fn login_failure_warns_once_and_rearms_after_success() {
         let mut engine = AlertEngine::new();
-        for hours in [None, Some(24.0), Some(3.0)] {
-            assert!(engine.check_auth_token_expiry(hours).is_empty());
-        }
-        assert_eq!(
-            engine
-                .check_auth_token_expiry(Some(3.0 - 1.0 / 3600.0))
-                .len(),
-            1
-        );
-        assert!(engine.check_auth_token_expiry(Some(2.0)).is_empty());
-        assert!(engine.check_auth_token_expiry(None).is_empty());
-        assert!(engine.check_auth_token_expiry(Some(0.0)).is_empty());
-        assert!(engine.check_auth_token_expiry(Some(3.0)).is_empty());
-        assert_eq!(engine.check_auth_token_expiry(Some(0.0)).len(), 1);
-        assert_eq!(
-            AlertEngine::new().check_auth_token_expiry(Some(-1.0)).len(),
-            1
-        );
+        assert!(engine.check_login_failure(false).is_empty());
+        assert_eq!(engine.check_login_failure(true).len(), 1);
+        assert!(engine.check_login_failure(true).is_empty());
+        assert!(engine.check_login_failure(false).is_empty());
+        assert_eq!(engine.check_login_failure(true).len(), 1);
     }
 
     #[test]

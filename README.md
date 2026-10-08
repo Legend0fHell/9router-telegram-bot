@@ -20,8 +20,8 @@ On every startup, the bot sends an **ARMED** message to the configured chat befo
   Alerts on Codex accounts returning `401 Unauthorized` or `403 Forbidden` (explicitly ignoring temporary `429 Too Many Requests` rate limits). Multiple errored or recovered accounts in the same polling cycle are batched into single consolidated messages.
 - 🎁 **Banked Reset Notifications**:
   Detects and alerts whenever accounts receive additional banked reset credits (`availableCount` increases). Batches all credited accounts in the same cycle into a single message.
-- ⚠️ **Dashboard Auth Token Expiration**:
-  Reads the unverified JWT `exp` claim for an informational warning when less than **3 hours** remain. Dashboard sessions normally last 24 hours. Rotate `ROUTER_AUTH_TOKEN` and restart the bot; automatic login is not implemented.
+- ⚠️ **Dashboard Login Failure**:
+  Uses `ROUTER_PASSWORD` to obtain in-memory sessions and refresh them five minutes before JWT expiry, on dashboard requests and polling cycles. Successful refresh is silent. Login failures produce one notice per failure episode; successful login rearms it. Retries wait at least five minutes and honor numeric Retry-After. Password login must be enabled; SSO-only deployments are unsupported.
 - 🚀 **Update Available Alert**:
   Queries `/api/version` on 9router (which checks against npm registry `9router/latest`). If `hasUpdate` is true, sends an alert comparing current and latest version. Fires once per new version to prevent repeated notifications.
 - 🏆 **Daily usage leaderboard**:
@@ -64,7 +64,7 @@ cp .env.example .env
 | `TELOXIDE_TOKEN` | Telegram bot token from [@BotFather](https://t.me/BotFather) | *Required* |
 | `TELEGRAM_CHAT_ID` | Alert destination and only chat allowed to use commands | *Required* |
 | `ROUTER_URL` | HTTP(S) base URL, without userinfo, query or fragment | *Required* |
-| `ROUTER_AUTH_TOKEN` | Dashboard JWT authentication token (`auth_token` cookie) | *Required* |
+| `ROUTER_PASSWORD` | Dashboard login password; session cookies remain in memory | *Required* |
 | `ROUTER_API_KEY` | Optional 9router API key (e.g. `sk-...`) for authenticated `/v1` pings | *Optional* |
 | `POLL_INTERVAL_SECS` | Positive integer delay after each polling cycle (five minutes plus cycle execution time between checks) | `300` |
 

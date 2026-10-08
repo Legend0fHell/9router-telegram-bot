@@ -23,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
     let config = Arc::new(Config::from_env()?);
     let client = Arc::new(NineRouterClient::new(
         config.router_url.clone(),
-        config.router_auth_token.clone(),
+        config.router_password.clone(),
         config.router_api_key.clone(),
     )?);
 
@@ -98,15 +98,20 @@ async fn run_monitor_loop(bot: Bot, client: Arc<NineRouterClient>, config: Arc<C
 
     loop {
         let mut alerts = Vec::new();
-        let now = chrono::Utc::now();
 
         // 1. Check /v1 endpoint serving health
         let health = client.check_v1_health().await;
         alerts.extend(engine.check_v1_health(&health));
 
-        // 2. Check 9router dashboard auth token expiry
-        let auth_hours = config.auth_token_hours_remaining(now);
-        alerts.extend(engine.check_auth_token_expiry(auth_hours));
+        // Refresh before expiry even when no dashboard command is running.
+        let login_failed = match client.refresh_session().await {
+            Ok(()) => false,
+            Err(e) => {
+                warn!("Dashboard session refresh failed: {e}");
+                true
+            }
+        };
+        alerts.extend(engine.check_login_failure(login_failed));
 
         // 3. Check for 9router updates
         match client.fetch_version().await {

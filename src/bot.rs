@@ -51,8 +51,9 @@ pub async fn handle_command(
         }
         Command::Status => {
             let health = health_text(client.check_v1_health().await);
-            let expiry = config
+            let expiry = client
                 .auth_token_hours_remaining(Utc::now())
+                .await
                 .map(|h| format!("{:.1}h remaining", h.max(0.0)))
                 .unwrap_or_else(|| "unknown".into());
             match client.fetch_connections().await {
@@ -243,7 +244,7 @@ mod tests {
             teloxide_token: "synthetic".into(),
             telegram_chat_id: -100123,
             router_url: "https://router.example.com".into(),
-            router_auth_token: "synthetic".into(),
+            router_password: "synthetic".into(),
             router_api_key: None,
             poll_interval_secs: 60,
         };

@@ -139,8 +139,8 @@ async fn main() -> anyhow::Result<()> {
         previews.push(format!("<i>[PREVIEW ONLY]</i>\n\n{alert}"));
     }
 
-    // 7. Auth token expiry notice preview
-    let token_alerts = engine.check_auth_token_expiry(Some(2.5));
+    // 7. Login failure notice preview
+    let token_alerts = engine.check_login_failure(true);
     for alert in token_alerts {
         previews.push(format!("<i>[PREVIEW ONLY]</i>\n\n{alert}"));
     }

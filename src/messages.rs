@@ -140,11 +140,8 @@ pub fn banked_resets_alert(items: &[(&str, &str, &str, i64, i64, i64)]) -> Strin
     lines.join("\n")
 }
 
-pub fn auth_token_expiry_alert(hours: f64) -> String {
-    format!(
-        "⚠️ <b>[NOTICE] 9router dashboard auth token expires soon!</b>\n<i>A-ano... please refresh it before it expires~ (´• ω •`)</i>\n• Time remaining: <b>{:.1} hours</b>\nPlease refresh <code>ROUTER_AUTH_TOKEN</code>, onii-chan~",
-        hours.max(0.0)
-    )
+pub fn login_failure_alert() -> String {
+    "⚠️ <b>[NOTICE] Dashboard automatic login failed!</b>\n<i>A-ano... automatic login needs attention, onii-chan~ (´• ω •`)</i>\nCheck <code>ROUTER_PASSWORD</code> and dashboard login availability. The bot will retry after its login cooldown.".into()
 }
 
 pub fn daily_leaderboard_greeting() -> &'static str {
@@ -168,7 +165,8 @@ pub fn weekly_resets_alert(items: &[(&str, &str, &str, &str, &str)]) -> String {
 
     let mut lines = vec![
         heading.to_string(),
-        "<i>Fufufu~ Quota replenished! Time to code lots and lots, onii-chan! (๑>ᴗ<๑)✨</i>".to_string(),
+        "<i>Fufufu~ Quota replenished! Time to code lots and lots, onii-chan! (๑>ᴗ<๑)✨</i>"
+            .to_string(),
     ];
 
     for (name, provider, email, quota_name, reset_time) in items {
@@ -181,8 +179,6 @@ pub fn weekly_resets_alert(items: &[(&str, &str, &str, &str, &str)]) -> String {
             reset_time
         ));
     }
-    lines.push(
-        "<i>Let's do our best again this week! (ง •̀ω•́)ง</i>".to_string(),
-    );
+    lines.push("<i>Let's do our best again this week! (ง •̀ω•́)ง</i>".to_string());
     lines.join("\n")
 }
