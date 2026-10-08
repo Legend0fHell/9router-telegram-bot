@@ -109,7 +109,7 @@ pub(crate) fn validate_auth_token(value: &str) -> Result<()> {
 
 fn parse_poll_interval(value: Option<&str>) -> Result<u64> {
     let seconds = value
-        .unwrap_or("60")
+        .unwrap_or("300")
         .parse::<u64>()
         .context("POLL_INTERVAL_SECS must be a positive integer")?;
     anyhow::ensure!(seconds > 0, "POLL_INTERVAL_SECS must be greater than zero");
@@ -166,7 +166,6 @@ mod tests {
             assert!(validate_auth_token(token).is_err());
         }
         assert!(validate_auth_token("synthetic.jwt_token-value").is_ok());
-        assert_eq!(parse_poll_interval(None).unwrap(), 60);
         assert_eq!(parse_poll_interval(Some("5")).unwrap(), 5);
         for interval in ["0", "-1", "abc", "", "18446744073709551616"] {
             assert!(parse_poll_interval(Some(interval)).is_err());

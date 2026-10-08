@@ -88,10 +88,7 @@ pub fn report(stats: UsageStats, fetched_at: DateTime<Utc>) -> String {
         add(&mut entry.1, &row);
     }
     let mut sections = vec![format!("🏆 <b>Daily usage leaderboard</b>\n{} → {} <b>UTC+7</b>\n<i>Last 24h · top 5 by requests</i>\n\n<b>{} requests · ~${:.2} estimated</b>\nInput <b>{}</b> · Cached <b>{}</b> · Output <b>{}</b>", start.format("%d %b %H:%M"), end.format("%d %b %H:%M"), compact(stats.total_requests), stats.total_cost, compact(stats.total_prompt_tokens), compact(stats.total_cached_tokens), compact(stats.total_completion_tokens))];
-    sections.insert(
-        1,
-        "<i>Otsukaresama, senpai~ here's your daily usage roundup! (ﾉ◕ヮ◕)ﾉ*:･ﾟ✧</i>".into(),
-    );
+    sections.insert(1, crate::messages::daily_leaderboard_greeting().into());
     sections.push(ranking("🔑 Top API keys", keys.into_values().collect()));
     sections.push(ranking("🤖 Top models", models.into_iter().collect()));
     sections.push(ranking("👤 Top accounts", accounts.into_values().collect()));

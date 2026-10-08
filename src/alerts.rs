@@ -65,11 +65,7 @@ impl AlertEngine {
                 if !is_up {
                     self.state.v1_down_since = Some(now);
                     if let HealthStatus::Down(err) = status {
-                        alerts.push(format!(
-                            "🚨 <b>[ALERT] 9router /v1 serving endpoint is DOWN!</b>\n<i>Eeh?! Connection trouble, senpai~ (っ˘̩╭╮˘̩)っ</i>\n• Incident time: <b>{}</b>\n<blockquote expandable>{}</blockquote>",
-                            local_time(now),
-                            crate::bot::display(&err.replace(['\r', '\n'], " "))
-                        ));
+                        alerts.push(crate::messages::v1_down_alert(&local_time(now), err, true));
                     }
                 }
             }
@@ -82,10 +78,10 @@ impl AlertEngine {
                         HealthStatus::Down(err) => err.as_str(),
                         _ => "Unknown error",
                     };
-                    alerts.push(format!(
-                        "🚨 <b>[ALERT] 9router /v1 serving endpoint has gone DOWN!</b>\n<i>Eeh?! Connection trouble, senpai~ (っ˘̩╭╮˘̩)っ</i>\n• Incident time: <b>{}</b>\n<blockquote expandable>{}</blockquote>",
-                        local_time(now),
-                        crate::bot::display(&detail.replace(['\r', '\n'], " "))
+                    alerts.push(crate::messages::v1_down_alert(
+                        &local_time(now),
+                        detail,
+                        false,
                     ));
                 } else if !prev_up && is_up {
                     // Endpoint recovered
@@ -96,9 +92,17 @@ impl AlertEngine {
                     };
                     let started = self.state.v1_down_since.take().unwrap_or(now);
                     let seconds = (now - started).num_seconds().max(0);
-                    alerts.push(format!(
-                        "✅ <b>[RESOLVED] 9router /v1 serving endpoint is back UP (HTTP {code})!</b>\n<i>Yatta! We're connected again, nya~ (ﾉ◕ヮ◕)ﾉ*:･ﾟ✧</i>\n• Incident time: <b>{}</b>\n• Resolve time: <b>{}</b>\n• Incident duration: <b>{}h {}m {}s</b>",
-                        local_time(started), local_time(now), seconds / 3600, seconds / 60 % 60, seconds % 60
+                    let duration_str = format!(
+                        "{}h {}m {}s",
+                        seconds / 3600,
+                        seconds / 60 % 60,
+                        seconds % 60
+                    );
+                    alerts.push(crate::messages::v1_resolved_alert(
+                        code,
+                        &local_time(started),
+                        &local_time(now),
+                        &duration_str,
                     ));
                 }
             }
@@ -107,10 +111,12 @@ impl AlertEngine {
         alerts
     }
 
-    /// Check codex accounts for 401/403 errors (explicitly excluding 429)
+    /// Check codex accounts for 401/403 errors (explicitly excluding 429).
+    /// Batches newly errored and newly cleared accounts into consolidated messages.
     pub fn check_codex_errors(&mut self, connections: &[Connection]) -> Vec<String> {
         let mut alerts = Vec::new();
         let mut current_errored = HashSet::new();
+        let mut new_errored = Vec::new();
 
         for conn in connections {
             if !conn.provider.eq_ignore_ascii_case("codex") {
@@ -135,153 +141,219 @@ impl AlertEngine {
                         })
                         .unwrap_or("401/403 Authentication Error");
 
-                    alerts.push(format!(
-                        "🚨 <b>[ALERT] Codex account authentication error (401/403)!</b>\n<i>A-ano... this account needs attention~ (；ω；)</i>\n• Account: <b>{}</b> ({})\n• Email: <code>{}</code>\n<blockquote expandable>{}</blockquote>",
-                        crate::bot::display(&conn.display_name()),
-                        crate::bot::display(&conn.provider),
-                        crate::bot::display(conn.email.as_deref().unwrap_or("N/A")),
-                        crate::bot::display(&err_desc.replace(['\r', '\n'], " "))
-                    ));
+                    new_errored.push((conn, err_desc));
                 }
             }
         }
 
+        let mut cleared = Vec::new();
         for recovered_id in self.state.codex_error_accounts.difference(&current_errored) {
             if let Some(conn) = connections.iter().find(|c| c.id == *recovered_id) {
-                alerts.push(format!(
-                    "✅ <b>[RESOLVED] Codex account {} 401/403 error has cleared!</b>\n<i>Yatta! Authentication trouble cleared~ (｡•̀ᴗ-)✧</i>\n• Provider: {}\n• Email: <code>{}</code>",
-                    crate::bot::display(&conn.display_name()),
-                    crate::bot::display(&conn.provider),
-                    crate::bot::display(conn.email.as_deref().unwrap_or("N/A"))
-                ));
+                cleared.push(conn);
             }
         }
 
         self.state.codex_error_accounts = current_errored;
+
+        if !new_errored.is_empty() {
+            let names: Vec<String> = new_errored.iter().map(|(c, _)| c.display_name()).collect();
+            let items: Vec<(&str, &str, &str, &str)> = new_errored
+                .iter()
+                .zip(names.iter())
+                .map(|((c, err), name)| {
+                    (
+                        name.as_str(),
+                        c.provider.as_str(),
+                        c.email.as_deref().unwrap_or("N/A"),
+                        *err,
+                    )
+                })
+                .collect();
+            alerts.push(crate::messages::codex_errors_alert(&items));
+        }
+
+        if !cleared.is_empty() {
+            let names: Vec<String> = cleared.iter().map(|c| c.display_name()).collect();
+            let items: Vec<(&str, &str, &str)> = cleared
+                .iter()
+                .zip(names.iter())
+                .map(|(c, name)| {
+                    (
+                        name.as_str(),
+                        c.provider.as_str(),
+                        c.email.as_deref().unwrap_or("N/A"),
+                    )
+                })
+                .collect();
+            alerts.push(crate::messages::codex_resolved_alert(&items));
+        }
+
         alerts
     }
 
-    /// Check weekly quotas for >30% remaining quota with <24h, <12h, <3h reset warnings
-    pub fn check_weekly_quotas(
-        &mut self,
-        conn: &Connection,
-        usage: &UsageResponse,
-        now: DateTime<Utc>,
-    ) -> Vec<String> {
-        let mut alerts = Vec::new();
-        let quotas = match &usage.quotas {
-            Some(q) => q,
-            None => return alerts,
-        };
+    /// Check weekly quotas across accounts for >30% remaining quota with <24h, <12h, <3h reset warnings.
+    /// Batches warnings of the same tier into a single consolidated message.
+    pub fn check_weekly_quotas<'a, I>(&mut self, entries: I, now: DateTime<Utc>) -> Vec<String>
+    where
+        I: IntoIterator<Item = (&'a Connection, &'a UsageResponse)>,
+    {
+        // Map tier -> list of formatted item lines
+        let mut tier_items: HashMap<QuotaWarningTier, Vec<String>> = HashMap::new();
 
-        for (quota_name, quota_detail) in quotas {
-            if quota_detail.unlimited == Some(true) || !is_weekly_quota(quota_name, quota_detail) {
-                continue;
-            }
-
-            let reset_at = match quota_detail.reset_datetime() {
-                Some(reset_at) => reset_at,
+        for (conn, usage) in entries {
+            let quotas = match &usage.quotas {
+                Some(q) => q,
                 None => continue,
             };
-            let cycle = self
-                .state
-                .quota_notified_tiers
-                .entry((conn.id.clone(), quota_name.clone()))
-                .or_insert((reset_at, None));
 
-            // ponytail: reset timestamps within 60s share an anchored cycle; use an API cycle ID if provided.
-            let reset_shift = reset_at.signed_duration_since(cycle.0);
-            if reset_shift > Duration::seconds(60) {
-                *cycle = (reset_at, None);
-            } else if reset_shift < -Duration::seconds(60) {
-                continue;
-            }
+            for (quota_name, quota_detail) in quotas {
+                if quota_detail.unlimited == Some(true)
+                    || !is_weekly_quota(quota_name, quota_detail)
+                {
+                    continue;
+                }
 
-            let remaining_pct = match quota_detail.remaining_pct() {
-                Some(p) if p > 30.0 => p,
-                _ => continue,
-            };
-            let time_left = cycle.0.signed_duration_since(now);
-            if time_left <= Duration::zero() {
-                continue;
-            }
-            let hours_left = time_left.num_milliseconds() as f64 / 3_600_000.0;
-            let current_tier = if time_left < Duration::hours(3) {
-                Some(QuotaWarningTier::LessThan3h)
-            } else if time_left < Duration::hours(12) {
-                Some(QuotaWarningTier::LessThan12h)
-            } else if time_left < Duration::hours(24) {
-                Some(QuotaWarningTier::LessThan24h)
-            } else {
-                None
-            };
+                let reset_at = match quota_detail.reset_datetime() {
+                    Some(reset_at) => reset_at,
+                    None => continue,
+                };
+                let cycle = self
+                    .state
+                    .quota_notified_tiers
+                    .entry((conn.id.clone(), quota_name.clone()))
+                    .or_insert((reset_at, None));
 
-            if let Some(tier) = current_tier {
-                let highest = cycle.1;
+                // ponytail: reset timestamps within 60s share an anchored cycle; use an API cycle ID if provided.
+                let reset_shift = reset_at.signed_duration_since(cycle.0);
+                if reset_shift > Duration::seconds(60) {
+                    *cycle = (reset_at, None);
+                } else if reset_shift < -Duration::seconds(60) {
+                    continue;
+                }
 
-                let should_alert = match highest {
-                    None => true,
-                    Some(prev_tier) => tier > prev_tier,
+                let remaining_pct = match quota_detail.remaining_pct() {
+                    Some(p) if p > 30.0 => p,
+                    _ => continue,
+                };
+                let time_left = cycle.0.signed_duration_since(now);
+                if time_left <= Duration::zero() {
+                    continue;
+                }
+                let hours_left = time_left.num_milliseconds() as f64 / 3_600_000.0;
+                let current_tier = if time_left < Duration::hours(3) {
+                    Some(QuotaWarningTier::LessThan3h)
+                } else if time_left < Duration::hours(12) {
+                    Some(QuotaWarningTier::LessThan12h)
+                } else if time_left < Duration::hours(24) {
+                    Some(QuotaWarningTier::LessThan24h)
+                } else {
+                    None
                 };
 
-                if should_alert {
-                    cycle.1 = Some(tier);
-                    let emoji = match tier {
-                        QuotaWarningTier::LessThan3h => "🚨",
-                        QuotaWarningTier::LessThan12h => "⚠️",
-                        QuotaWarningTier::LessThan24h => "⏳",
-                    };
-                    let filled = (remaining_pct.clamp(0.0, 100.0) / 10.0).round() as usize;
+                if let Some(tier) = current_tier {
+                    let highest = cycle.1;
 
-                    alerts.push(format!(
-                        "{emoji} <b>[QUOTA WARNING] Weekly quota expiring soon ({tier_label})!</b>\n<i>Ara ara~ reset time is getting close! (｡•́︿•̀｡)</i>\n• Account: <b>{}</b> ({})\n• Email: <code>{}</code>\n• Quota: <b>{}</b>\n• Remaining: <code>{}{}</code> <b>{:.1}%</b>\n• Time to reset: <b>{:.1} hours</b>\n• Reset: <b>{}</b>\n<i>Use the remaining quota before reset, senpai~ Ganbatte! (ง •̀ω•́)ง</i>",
-                        crate::bot::display(&conn.display_name()),
-                        crate::bot::display(&conn.provider),
-                        crate::bot::display(conn.email.as_deref().unwrap_or("N/A")),
-                        crate::bot::display(quota_name),
-                        &"██████████"[..filled * '█'.len_utf8()],
-                        &"░░░░░░░░░░"[filled * '░'.len_utf8()..],
-                        remaining_pct,
-                        hours_left,
-                        local_time(cycle.0),
-                        tier_label = crate::bot::display(tier.label())
-                    ));
+                    let should_alert = match highest {
+                        None => true,
+                        Some(prev_tier) => tier > prev_tier,
+                    };
+
+                    if should_alert {
+                        cycle.1 = Some(tier);
+                        let filled = (remaining_pct.clamp(0.0, 100.0) / 10.0).round() as usize;
+                        let bar = format!(
+                            "{}{}",
+                            &"██████████"[..filled * '█'.len_utf8()],
+                            &"░░░░░░░░░░"[filled * '░'.len_utf8()..]
+                        );
+                        let name = conn.display_name();
+                        let item = crate::messages::quota_item_line(&crate::messages::QuotaItem {
+                            name: &name,
+                            provider: &conn.provider,
+                            email: conn.email.as_deref().unwrap_or("N/A"),
+                            quota_name,
+                            bar: &bar,
+                            remaining_pct,
+                            hours_left,
+                            reset_time: &local_time(cycle.0),
+                        });
+                        tier_items.entry(tier).or_default().push(item);
+                    }
                 }
+            }
+        }
+
+        let mut alerts = Vec::new();
+        // Order by tier severity ascending (24h -> 12h -> 3h)
+        for tier in [
+            QuotaWarningTier::LessThan24h,
+            QuotaWarningTier::LessThan12h,
+            QuotaWarningTier::LessThan3h,
+        ] {
+            if let Some(items) = tier_items.remove(&tier) {
+                let emoji = match tier {
+                    QuotaWarningTier::LessThan3h => "🚨",
+                    QuotaWarningTier::LessThan12h => "⚠️",
+                    QuotaWarningTier::LessThan24h => "⏳",
+                };
+                alerts.push(crate::messages::quota_warning_alert(
+                    tier.label(),
+                    emoji,
+                    &items,
+                ));
             }
         }
 
         alerts
     }
 
-    /// Check for newly added banked resets compared to last time
-    pub fn check_banked_resets(&mut self, conn: &Connection, usage: &UsageResponse) -> Vec<String> {
-        let mut alerts = Vec::new();
-        let available = usage
-            .reset_credits
-            .as_ref()
-            .and_then(|rc| rc.available_count);
+    /// Check for newly added banked resets across connections compared to last time.
+    /// Batches all newly credited accounts into a single consolidated message.
+    pub fn check_banked_resets<'a, I>(&mut self, entries: I) -> Vec<String>
+    where
+        I: IntoIterator<Item = (&'a Connection, &'a UsageResponse)>,
+    {
+        let mut credited = Vec::new();
 
-        if let Some(current_count) = available {
-            match self.state.banked_resets.get(&conn.id) {
-                Some(&prev_count) if current_count > prev_count => {
-                    let diff = current_count - prev_count;
-                    alerts.push(format!(
-                        "🎁 <b>[NOTICE] Additional banked reset received!</b>\n<i>Sugoi! A little reset gift, nya~ (ﾉ´ヮ`)ﾉ*:･ﾟ✧</i>\n• Account: <b>{}</b> ({})\n• Email: <code>{}</code>\n• Banked resets: <b>{} ➔ {} (+{diff})</b>",
-                        crate::bot::display(&conn.display_name()),
-                        crate::bot::display(&conn.provider),
-                        crate::bot::display(conn.email.as_deref().unwrap_or("N/A")),
-                        prev_count,
-                        current_count
-                    ));
+        for (conn, usage) in entries {
+            let available = usage
+                .reset_credits
+                .as_ref()
+                .and_then(|rc| rc.available_count);
+
+            if let Some(current_count) = available {
+                if let Some(&prev_count) = self.state.banked_resets.get(&conn.id) {
+                    if current_count > prev_count {
+                        let diff = current_count - prev_count;
+                        credited.push((conn, prev_count, current_count, diff));
+                    }
                 }
-                _ => {}
+                self.state
+                    .banked_resets
+                    .insert(conn.id.clone(), current_count);
             }
-            self.state
-                .banked_resets
-                .insert(conn.id.clone(), current_count);
         }
 
-        alerts
+        if credited.is_empty() {
+            return Vec::new();
+        }
+
+        let names: Vec<String> = credited.iter().map(|(c, ..)| c.display_name()).collect();
+        let items: Vec<(&str, &str, &str, i64, i64, i64)> = credited
+            .iter()
+            .zip(names.iter())
+            .map(|((c, prev, curr, diff), name)| {
+                (
+                    name.as_str(),
+                    c.provider.as_str(),
+                    c.email.as_deref().unwrap_or("N/A"),
+                    *prev,
+                    *curr,
+                    *diff,
+                )
+            })
+            .collect();
+        vec![crate::messages::banked_resets_alert(&items)]
     }
 
     /// Warn once when the dashboard's 24-hour auth token has less than 3 hours left.
@@ -290,10 +362,7 @@ impl AlertEngine {
         if let Some(hours) = hours_remaining {
             if hours < 3.0 && !self.state.auth_token_expiry_alerted {
                 self.state.auth_token_expiry_alerted = true;
-                alerts.push(format!(
-                    "⚠️ <b>[NOTICE] 9router dashboard auth token expires soon!</b>\n<i>A-ano... please refresh it before it expires~ (´• ω •`)</i>\n• Time remaining: <b>{:.1} hours</b>\nPlease refresh <code>ROUTER_AUTH_TOKEN</code>, senpai~",
-                    hours.max(0.0)
-                ));
+                alerts.push(crate::messages::auth_token_expiry_alert(hours));
             } else if hours >= 3.0 {
                 self.state.auth_token_expiry_alerted = false;
             }
@@ -421,66 +490,77 @@ mod tests {
         let now = now();
         let reset = now + Duration::hours(20);
         let usage = weekly_usage(reset, 60.0);
-        assert_eq!(engine.check_weekly_quotas(&conn, &usage, now).len(), 1);
+        assert_eq!(engine.check_weekly_quotas([(&conn, &usage)], now).len(), 1);
         for seconds in [-60, -1, 0, 1, 60] {
             let jittered = weekly_usage(reset + Duration::seconds(seconds), 60.0);
-            assert!(engine.check_weekly_quotas(&conn, &jittered, now).is_empty());
             assert!(engine
-                .check_weekly_quotas(&conn, &jittered, reset - Duration::hours(12))
+                .check_weekly_quotas([(&conn, &jittered)], now)
+                .is_empty());
+            assert!(engine
+                .check_weekly_quotas([(&conn, &jittered)], reset - Duration::hours(12))
                 .is_empty());
         }
         let tier_two_time = reset - Duration::hours(12) + Duration::nanoseconds(1);
         assert_eq!(
             engine
-                .check_weekly_quotas(&conn, &usage, tier_two_time)
+                .check_weekly_quotas([(&conn, &usage)], tier_two_time)
                 .len(),
             1
         );
         assert!(engine
-            .check_weekly_quotas(&conn, &usage, tier_two_time)
+            .check_weekly_quotas([(&conn, &usage)], tier_two_time)
             .is_empty());
         let tier_three_time = reset - Duration::hours(3) + Duration::nanoseconds(1);
         assert_eq!(
             engine
-                .check_weekly_quotas(&conn, &usage, tier_three_time)
+                .check_weekly_quotas([(&conn, &usage)], tier_three_time)
                 .len(),
             1
         );
-        assert!(engine.check_weekly_quotas(&conn, &usage, reset).is_empty());
+        assert!(engine
+            .check_weekly_quotas([(&conn, &usage)], reset)
+            .is_empty());
 
         for week in 1..=10 {
             let next_reset = reset + Duration::days(7 * week);
             let next_usage = weekly_usage(next_reset, 60.0);
             assert!(engine
-                .check_weekly_quotas(&conn, &next_usage, next_reset - Duration::days(7))
+                .check_weekly_quotas([(&conn, &next_usage)], next_reset - Duration::days(7))
                 .is_empty());
             assert_eq!(
                 engine
-                    .check_weekly_quotas(&conn, &next_usage, next_reset - Duration::hours(20))
+                    .check_weekly_quotas([(&conn, &next_usage)], next_reset - Duration::hours(20))
                     .len(),
                 1
             );
             assert_eq!(engine.state.quota_notified_tiers.len(), 1);
         }
-        assert!(engine.check_weekly_quotas(&conn, &usage, now).is_empty());
+        assert!(engine
+            .check_weekly_quotas([(&conn, &usage)], now)
+            .is_empty());
     }
 
     #[test]
-    fn distinct_weekly_quotas_and_accounts_with_same_reset_are_independent() {
+    fn distinct_weekly_quotas_and_accounts_with_same_reset_are_batched_in_single_message() {
         let mut engine = AlertEngine::new();
-        let conn = connection();
+        let conn1 = connection();
+        let mut conn2 = connection();
+        conn2.id = "account-2".into();
         let now = now();
         let mut usage = weekly_usage(now + Duration::hours(2), 60.0);
         let quotas = usage.quotas.as_mut().unwrap();
         quotas.insert("weekly-other".into(), quotas["weekly"].clone());
-        assert_eq!(engine.check_weekly_quotas(&conn, &usage, now).len(), 2);
-        assert!(engine.check_weekly_quotas(&conn, &usage, now).is_empty());
-        let mut other_conn = conn;
-        other_conn.id = "account-2".into();
-        assert_eq!(
-            engine.check_weekly_quotas(&other_conn, &usage, now).len(),
-            2
-        );
+
+        // Two quotas on conn1 + two quotas on conn2 all in tier <3h -> exactly 1 combined alert message!
+        let alerts = engine.check_weekly_quotas([(&conn1, &usage), (&conn2, &usage)], now);
+        assert_eq!(alerts.len(), 1);
+        assert!(alerts[0].contains("account-1"));
+        assert!(alerts[0].contains("account-2"));
+        assert!(alerts[0].contains("Weekly quotas expiring soon (< 3 hours)!"));
+
+        assert!(engine
+            .check_weekly_quotas([(&conn1, &usage), (&conn2, &usage)], now)
+            .is_empty());
         assert_eq!(engine.state.quota_notified_tiers.len(), 4);
     }
 
@@ -492,7 +572,7 @@ mod tests {
         let reset = now + Duration::hours(2);
         for remaining in [0.0, 29.9, 30.0, f64::NAN] {
             assert!(engine
-                .check_weekly_quotas(&conn, &weekly_usage(reset, remaining), now)
+                .check_weekly_quotas([(&conn, &weekly_usage(reset, remaining))], now)
                 .is_empty());
         }
         let mut usage = weekly_usage(reset, 30.0001);
@@ -503,7 +583,9 @@ mod tests {
             .get_mut("weekly")
             .unwrap()
             .unlimited = Some(true);
-        assert!(engine.check_weekly_quotas(&conn, &usage, now).is_empty());
+        assert!(engine
+            .check_weekly_quotas([(&conn, &usage)], now)
+            .is_empty());
         usage
             .quotas
             .as_mut()
@@ -511,7 +593,7 @@ mod tests {
             .get_mut("weekly")
             .unwrap()
             .unlimited = Some(false);
-        assert_eq!(engine.check_weekly_quotas(&conn, &usage, now).len(), 1);
+        assert_eq!(engine.check_weekly_quotas([(&conn, &usage)], now).len(), 1);
     }
 
     #[test]
@@ -541,7 +623,7 @@ mod tests {
             let mut engine = AlertEngine::new();
             let usage = weekly_usage(now + time_left, 60.0);
             assert_eq!(
-                engine.check_weekly_quotas(&conn, &usage, now).len(),
+                engine.check_weekly_quotas([(&conn, &usage)], now).len(),
                 usize::from(tier.is_some())
             );
             assert_eq!(
@@ -552,18 +634,39 @@ mod tests {
     }
 
     #[test]
-    fn banked_resets_only_alert_on_increase() {
+    fn banked_resets_only_alert_on_increase_and_batches_multiple_accounts() {
         let mut engine = AlertEngine::new();
-        let conn = connection();
-        for (count, alert_count) in [(1, 0), (2, 1), (2, 0), (0, 0), (1, 1)] {
-            let usage = UsageResponse {
-                reset_credits: Some(crate::models::ResetCredits {
-                    available_count: Some(count),
-                }),
-                ..Default::default()
-            };
-            assert_eq!(engine.check_banked_resets(&conn, &usage).len(), alert_count);
-        }
+        let conn1 = connection();
+        let mut conn2 = connection();
+        conn2.id = "account-2".into();
+        conn2.name = Some("Second Account".into());
+
+        let make_usage = |count| UsageResponse {
+            reset_credits: Some(crate::models::ResetCredits {
+                available_count: Some(count),
+            }),
+            ..Default::default()
+        };
+
+        // Initial baseline establishes count without alert
+        assert!(engine
+            .check_banked_resets([(&conn1, &make_usage(1)), (&conn2, &make_usage(0))])
+            .is_empty());
+
+        // Both increase simultaneously -> exactly ONE combined alert message
+        let alerts =
+            engine.check_banked_resets([(&conn1, &make_usage(3)), (&conn2, &make_usage(2))]);
+        assert_eq!(alerts.len(), 1);
+        assert!(alerts[0].contains("Additional banked resets received!"));
+        assert!(alerts[0].contains("account-1"));
+        assert!(alerts[0].contains("1 ➔ 3 (+2)"));
+        assert!(alerts[0].contains("Second Account"));
+        assert!(alerts[0].contains("0 ➔ 2 (+2)"));
+
+        // Subsequent poll with no further increase produces no alert
+        assert!(engine
+            .check_banked_resets([(&conn1, &make_usage(3)), (&conn2, &make_usage(2))])
+            .is_empty());
     }
 
     #[test]

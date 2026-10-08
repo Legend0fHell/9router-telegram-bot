@@ -2,6 +2,7 @@ use nine_router_bot::alerts::AlertEngine;
 use nine_router_bot::bot::{armed_message, handle_command, send_formatted, Command};
 use nine_router_bot::client::NineRouterClient;
 use nine_router_bot::config::Config;
+use nine_router_bot::models::{Connection, UsageResponse};
 use std::sync::Arc;
 use std::time::Duration;
 use teloxide::prelude::*;
@@ -114,15 +115,11 @@ async fn run_monitor_loop(bot: Bot, client: Arc<NineRouterClient>, config: Arc<C
                 alerts.extend(engine.check_codex_errors(&conns));
 
                 // Check quota & banked resets for active connections
+                let mut usage_batch = Vec::new();
                 for conn in conns.iter().filter(|c| c.is_active.unwrap_or(true)) {
                     match client.fetch_usage(&conn.id).await {
                         Ok(usage) => {
-                            alerts.extend(engine.check_weekly_quotas(
-                                conn,
-                                &usage,
-                                chrono::Utc::now(),
-                            ));
-                            alerts.extend(engine.check_banked_resets(conn, &usage));
+                            usage_batch.push((conn, usage));
                         }
                         Err(e) => {
                             warn!(
@@ -133,6 +130,11 @@ async fn run_monitor_loop(bot: Bot, client: Arc<NineRouterClient>, config: Arc<C
                         }
                     }
                 }
+
+                let refs: Vec<(&Connection, &UsageResponse)> =
+                    usage_batch.iter().map(|(c, u)| (*c, u)).collect();
+                alerts.extend(engine.check_weekly_quotas(refs.iter().copied(), chrono::Utc::now()));
+                alerts.extend(engine.check_banked_resets(refs));
             }
             Err(e) => {
                 error!("Monitor loop failed to fetch connections: {e}");

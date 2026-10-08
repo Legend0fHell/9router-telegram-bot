@@ -180,9 +180,7 @@ fn account_text(c: &Connection) -> String {
     )
 }
 
-pub fn armed_message(interval: u64) -> String {
-    format!("🟢 <b>9router bot armed</b>\n<i>Hai hai! Keeping watch, senpai~ (｡•̀ᴗ-)✧</i>\n\nMonitoring is starting.\nPolling delay: <b>{interval}s</b>\n\n<code>/status</code> · <code>/quota</code> · <code>/codex</code>\n<code>/accounts</code> · <code>/ping</code> · <code>/help</code>\n\n<i>This confirms notification access, not upstream health.</i>")
-}
+pub use crate::messages::armed_message;
 
 pub async fn send_formatted(
     bot: &Bot,

@@ -12,12 +12,12 @@ On every startup, the bot sends an **ARMED** message to the configured chat befo
   Alerts when `GET /v1` is unreachable or returns a server error (5xx), and sends a recovery notification. Without an API key, HTTP 401 proves reachability only—not successful inference. Checks run once per polling cycle, including quota-fetch time.
   Down alerts show the first observed incident time in **UTC+7**. Recovery shows incident time, resolve time, and elapsed incident duration (`h m s`). Times reflect polling observations, not the exact upstream outage boundaries; incident tracking is in memory and restarts begin a fresh observation.
 - ⏳ **Weekly Quota Waste Warning**:
-  Monitors enabled accounts returned by the usage-eligible providers API, across all pages. With **>30% remaining** and less than **24 hours**, **12 hours**, or **3 hours** until reset, warnings fire once per tier per account/quota/cycle. Reset timestamps within 60 seconds share an anchored cycle to tolerate upstream timestamp jitter; unlimited quotas are excluded.
+  Monitors enabled accounts returned by the usage-eligible providers API, across all pages. With **>30% remaining** and less than **24 hours**, **12 hours**, or **3 hours** until reset, warnings fire once per tier per account/quota/cycle. Reset timestamps within 60 seconds share an anchored cycle to tolerate upstream timestamp jitter; unlimited quotas are excluded. All accounts qualifying for the same warning tier within a polling cycle are batched into a single consolidated message.
   Quota warning reset deadlines are displayed in **UTC+7** (Asia/Ho_Chi_Minh); threshold calculations still use UTC instants.
 - 🔑 **Codex Account Authentication Errors**:
-  Alerts on Codex accounts returning `401 Unauthorized` or `403 Forbidden` (explicitly ignoring temporary `429 Too Many Requests` rate limits). Notifies when cleared.
+  Alerts on Codex accounts returning `401 Unauthorized` or `403 Forbidden` (explicitly ignoring temporary `429 Too Many Requests` rate limits). Multiple errored or recovered accounts in the same polling cycle are batched into single consolidated messages.
 - 🎁 **Banked Reset Notifications**:
-  Detects and alerts whenever an account receives an additional banked reset credit (`availableCount` increases).
+  Detects and alerts whenever accounts receive additional banked reset credits (`availableCount` increases). Batches all credited accounts in the same cycle into a single message.
 - ⚠️ **Dashboard Auth Token Expiration**:
   Reads the unverified JWT `exp` claim for an informational warning when less than **3 hours** remain. Dashboard sessions normally last 24 hours. Rotate `ROUTER_AUTH_TOKEN` and restart the bot; automatic login is not implemented.
 - 🏆 **Daily usage leaderboard**:
@@ -41,7 +41,7 @@ On every startup, the bot sends an **ARMED** message to the configured chat befo
 
 Commands only respond in `TELEGRAM_CHAT_ID`; in a group, every member of that configured group can use them. Messages use HTML headings, bold metrics, code emails and expandable error details. Weekly alerts include a ten-cell remaining-quota bar and UTC+7 reset deadline. Quota/Usage URL buttons are derived from `ROUTER_URL`, never credentials.
 
-Notifications, startup announcements and daily leaderboards include kawaii reactions and Unicode kaomoji (worried for failures, celebratory for recovery). Severity labels, metrics, timestamps and escaped upstream error details remain technical and unchanged; the style does not affect alert rules or delivery.
+All notification wording, kawaii tone, and kaomoji live in a dedicated language module at `src/messages.rs`. You can customize greetings, alert headers, reactions, and templates in this single location without touching alert engine logic or Telegram dispatching. Severity labels, metrics, timestamps, and escaped upstream error details remain technical and unchanged.
 
 Dynamic display fields are HTML-escaped, flattened to one line and limited to 240 characters with a visible ellipsis. Longer replies split at complete, balanced lines; no HTML tags or entities are cut. Accounts are not truncated. No new dependencies or newer Telegram rich-message APIs are required.
 
@@ -62,7 +62,7 @@ cp .env.example .env
 | `ROUTER_URL` | HTTP(S) base URL, without userinfo, query or fragment | *Required* |
 | `ROUTER_AUTH_TOKEN` | Dashboard JWT authentication token (`auth_token` cookie) | *Required* |
 | `ROUTER_API_KEY` | Optional 9router API key (e.g. `sk-...`) for authenticated `/v1` pings | *Optional* |
-| `POLL_INTERVAL_SECS` | Positive integer delay after each polling cycle | `60` |
+| `POLL_INTERVAL_SECS` | Positive integer delay after each polling cycle (five minutes plus cycle execution time between checks) | `300` |
 
 ## Running Locally
 
@@ -72,6 +72,9 @@ cargo run --release
 
 # Run unit tests
 cargo test
+
+# Send preview/test messages to configured Telegram chat
+cargo run --locked --example preview_messages
 ```
 
 Tests are isolated: synthetic credentials and local HTTP servers, no production network dependency.
