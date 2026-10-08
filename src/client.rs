@@ -113,6 +113,12 @@ impl NineRouterClient {
             .await
             .context("Failed to fetch usage")
     }
+
+    pub async fn fetch_usage_stats(&self) -> Result<crate::leaderboard::UsageStats> {
+        self.get_dashboard_json(&format!("{}/api/usage/stats?period=24h", self.base_url))
+            .await
+            .context("Failed to fetch 24-hour usage statistics")
+    }
 }
 
 #[cfg(test)]

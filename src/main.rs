@@ -1,5 +1,5 @@
 use nine_router_bot::alerts::AlertEngine;
-use nine_router_bot::bot::{handle_command, send_text, Command};
+use nine_router_bot::bot::{armed_message, handle_command, send_formatted, Command};
 use nine_router_bot::client::NineRouterClient;
 use nine_router_bot::config::Config;
 use std::sync::Arc;
@@ -27,6 +27,13 @@ async fn main() -> anyhow::Result<()> {
     )?);
 
     let bot = Bot::new(&config.teloxide_token);
+    send_formatted(
+        &bot,
+        ChatId(config.telegram_chat_id),
+        &armed_message(config.poll_interval_secs),
+        &config.router_url,
+    )
+    .await?;
 
     // Spawn periodic alert monitor loop
     let monitor_bot = bot.clone();
@@ -37,6 +44,32 @@ async fn main() -> anyhow::Result<()> {
         run_monitor_loop(monitor_bot, monitor_client, monitor_config).await;
     });
 
+    let daily_bot = bot.clone();
+    let daily_client = Arc::clone(&client);
+    let daily_config = Arc::clone(&config);
+    tokio::spawn(async move {
+        loop {
+            let due = nine_router_bot::leaderboard::next_midnight(chrono::Utc::now());
+            let delay = (due - chrono::Utc::now()).to_std().unwrap_or_default();
+            tokio::time::sleep(delay).await;
+            match daily_client.fetch_usage_stats().await {
+                Ok(stats) => {
+                    let report = nine_router_bot::leaderboard::report(stats, chrono::Utc::now());
+                    if let Err(e) = send_formatted(
+                        &daily_bot,
+                        ChatId(daily_config.telegram_chat_id),
+                        &report,
+                        &daily_config.router_url,
+                    )
+                    .await
+                    {
+                        error!("Daily leaderboard delivery failed: {e}");
+                    }
+                }
+                Err(_) => error!("Daily leaderboard fetch failed; report not sent"),
+            }
+        }
+    });
     info!("Setting up Telegram bot command dispatcher...");
     let handler = Update::filter_message()
         .filter_command::<Command>()
@@ -107,7 +140,7 @@ async fn run_monitor_loop(bot: Bot, client: Arc<NineRouterClient>, config: Arc<C
         }
 
         for alert in alerts {
-            if let Err(e) = send_text(&bot, chat_id, &alert).await {
+            if let Err(e) = send_formatted(&bot, chat_id, &alert, &config.router_url).await {
                 error!("Failed to deliver alert to Telegram chat {}: {e}", chat_id);
             }
         }
