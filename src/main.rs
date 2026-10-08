@@ -1,0 +1,117 @@
+use nine_router_bot::alerts::AlertEngine;
+use nine_router_bot::bot::{handle_command, send_text, Command};
+use nine_router_bot::client::NineRouterClient;
+use nine_router_bot::config::Config;
+use std::sync::Arc;
+use std::time::Duration;
+use teloxide::prelude::*;
+use teloxide::types::ChatId;
+use tracing::{error, info, warn};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,nine_router_bot=debug".into()),
+        )
+        .init();
+
+    info!("Starting 9router Telegram Bot...");
+
+    let config = Arc::new(Config::from_env()?);
+    let client = Arc::new(NineRouterClient::new(
+        config.router_url.clone(),
+        config.router_auth_token.clone(),
+        config.router_api_key.clone(),
+    )?);
+
+    let bot = Bot::new(&config.teloxide_token);
+
+    // Spawn periodic alert monitor loop
+    let monitor_bot = bot.clone();
+    let monitor_client = Arc::clone(&client);
+    let monitor_config = Arc::clone(&config);
+
+    tokio::spawn(async move {
+        run_monitor_loop(monitor_bot, monitor_client, monitor_config).await;
+    });
+
+    info!("Setting up Telegram bot command dispatcher...");
+    let handler = Update::filter_message()
+        .filter_command::<Command>()
+        .endpoint(handle_command);
+
+    Dispatcher::builder(bot, handler)
+        .dependencies(dptree::deps![client, config])
+        .enable_ctrlc_handler()
+        .build()
+        .dispatch()
+        .await;
+
+    Ok(())
+}
+
+async fn run_monitor_loop(bot: Bot, client: Arc<NineRouterClient>, config: Arc<Config>) {
+    let mut engine = AlertEngine::new();
+    let chat_id = ChatId(config.telegram_chat_id);
+    let interval = Duration::from_secs(config.poll_interval_secs);
+
+    info!(
+        "Alert monitor loop running (interval: {}s, target chat: {})",
+        config.poll_interval_secs, config.telegram_chat_id
+    );
+
+    loop {
+        let mut alerts = Vec::new();
+        let now = chrono::Utc::now();
+
+        // 1. Check /v1 endpoint serving health
+        let health = client.check_v1_health().await;
+        alerts.extend(engine.check_v1_health(&health));
+
+        // 2. Check 9router dashboard auth token expiry
+        let auth_hours = config.auth_token_hours_remaining(now);
+        alerts.extend(engine.check_auth_token_expiry(auth_hours));
+
+        // 3. Fetch connections
+        match client.fetch_connections().await {
+            Ok(conns) => {
+                // Check Codex accounts for 401/403 errors (ignoring 429)
+                alerts.extend(engine.check_codex_errors(&conns));
+
+                // Check quota & banked resets for active connections
+                for conn in conns.iter().filter(|c| c.is_active.unwrap_or(true)) {
+                    match client.fetch_usage(&conn.id).await {
+                        Ok(usage) => {
+                            alerts.extend(engine.check_weekly_quotas(
+                                conn,
+                                &usage,
+                                chrono::Utc::now(),
+                            ));
+                            alerts.extend(engine.check_banked_resets(conn, &usage));
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to fetch usage for {} ({}): {e}",
+                                conn.display_name(),
+                                conn.id
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Monitor loop failed to fetch connections: {e}");
+            }
+        }
+
+        for alert in alerts {
+            if let Err(e) = send_text(&bot, chat_id, &alert).await {
+                error!("Failed to deliver alert to Telegram chat {}: {e}", chat_id);
+            }
+        }
+
+        tokio::time::sleep(interval).await;
+    }
+}
