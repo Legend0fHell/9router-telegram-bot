@@ -20,6 +20,8 @@ On every startup, the bot sends an **ARMED** message to the configured chat befo
   Detects and alerts whenever accounts receive additional banked reset credits (`availableCount` increases). Batches all credited accounts in the same cycle into a single message.
 - ⚠️ **Dashboard Auth Token Expiration**:
   Reads the unverified JWT `exp` claim for an informational warning when less than **3 hours** remain. Dashboard sessions normally last 24 hours. Rotate `ROUTER_AUTH_TOKEN` and restart the bot; automatic login is not implemented.
+- 🚀 **Update Available Alert**:
+  Queries `/api/version` on 9router (which checks against npm registry `9router/latest`). If `hasUpdate` is true, sends an alert comparing current and latest version. Fires once per new version to prevent repeated notifications.
 - 🏆 **Daily usage leaderboard**:
   At **00:00 Asia/Ho_Chi_Minh (UTC+7)**, independently of quota polling, send the top **5 API keys**, **5 models**, and **5 accounts** ranked by recorded request count. Key rows combine model/provider buckets; model rows combine providers; account rows combine models by connection ID. Only key display names are shown, never credentials.
 

@@ -119,6 +119,12 @@ impl NineRouterClient {
             .await
             .context("Failed to fetch 24-hour usage statistics")
     }
+
+    pub async fn fetch_version(&self) -> Result<crate::models::VersionResponse> {
+        self.get_dashboard_json(&format!("{}/api/version", self.base_url))
+            .await
+            .context("Failed to fetch version info")
+    }
 }
 
 #[cfg(test)]

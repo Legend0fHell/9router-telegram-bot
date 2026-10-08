@@ -150,3 +150,11 @@ pub fn auth_token_expiry_alert(hours: f64) -> String {
 pub fn daily_leaderboard_greeting() -> &'static str {
     "<i>Otsukaresama, onii-chan~ here's your daily usage roundup! (ﾉ◕ヮ◕)ﾉ*:･ﾟ✧</i>"
 }
+
+pub fn update_available_alert(current: &str, latest: &str) -> String {
+    format!(
+        "🚀 <b>[UPDATE] New 9router version available!</b>\n<i>Sugoi, onii-chan! A new version was detected, nya~ (ﾉ´ヮ`)ﾉ*:･ﾟ✧</i>\n• Current version: <code>{}</code>\n• Latest version: <b>{}</b>\n\n<i>Update when convenient to get the latest features and fixes!</i>",
+        display(current),
+        display(latest)
+    )
+}

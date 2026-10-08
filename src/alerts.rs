@@ -34,6 +34,8 @@ pub struct AlertState {
     pub banked_resets: HashMap<String, i64>,
     /// Whether auth token expiry has been alerted
     pub auth_token_expiry_alerted: bool,
+    /// Last alerted update version string to prevent repeating notifications for the same version
+    pub last_notified_update_version: Option<String>,
 }
 
 #[derive(Default)]
@@ -369,6 +371,21 @@ impl AlertEngine {
         }
         alerts
     }
+
+    /// Check for available 9router updates from /api/version
+    pub fn check_update(&mut self, version_info: &crate::models::VersionResponse) -> Vec<String> {
+        let mut alerts = Vec::new();
+        if version_info.has_update {
+            if let Some(latest) = &version_info.latest_version {
+                if self.state.last_notified_update_version.as_deref() != Some(latest) {
+                    self.state.last_notified_update_version = Some(latest.clone());
+                    let current = version_info.current_version.as_deref().unwrap_or("unknown");
+                    alerts.push(crate::messages::update_available_alert(current, latest));
+                }
+            }
+        }
+        alerts
+    }
 }
 
 fn local_time(time: DateTime<Utc>) -> String {
@@ -690,5 +707,40 @@ mod tests {
             AlertEngine::new().check_auth_token_expiry(Some(-1.0)).len(),
             1
         );
+    }
+
+    #[test]
+    fn update_check_only_alerts_once_per_new_version() {
+        let mut engine = AlertEngine::new();
+        let no_update = crate::models::VersionResponse {
+            current_version: Some("0.5.95".into()),
+            latest_version: Some("0.5.95".into()),
+            has_update: false,
+        };
+        assert!(engine.check_update(&no_update).is_empty());
+
+        let update_v1 = crate::models::VersionResponse {
+            current_version: Some("0.5.95".into()),
+            latest_version: Some("0.5.96".into()),
+            has_update: true,
+        };
+        let alerts = engine.check_update(&update_v1);
+        assert_eq!(alerts.len(), 1);
+        assert!(alerts[0].contains("New 9router version available!"));
+        assert!(alerts[0].contains("0.5.95"));
+        assert!(alerts[0].contains("0.5.96"));
+
+        // Repeating the same check yields no new alerts
+        assert!(engine.check_update(&update_v1).is_empty());
+
+        // Another new version triggers an alert again
+        let update_v2 = crate::models::VersionResponse {
+            current_version: Some("0.5.95".into()),
+            latest_version: Some("0.5.97".into()),
+            has_update: true,
+        };
+        let alerts2 = engine.check_update(&update_v2);
+        assert_eq!(alerts2.len(), 1);
+        assert!(alerts2[0].contains("0.5.97"));
     }
 }

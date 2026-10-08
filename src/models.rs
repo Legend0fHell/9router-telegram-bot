@@ -77,6 +77,13 @@ pub struct ResetCredits {
     #[serde(rename = "availableCount")]
     pub available_count: Option<i64>,
 }
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct VersionResponse {
+    pub current_version: Option<String>,
+    pub latest_version: Option<String>,
+    pub has_update: bool,
+}
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]

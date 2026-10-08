@@ -145,7 +145,11 @@ async fn main() -> anyhow::Result<()> {
         previews.push(format!("<i>[PREVIEW ONLY]</i>\n\n{alert}"));
     }
 
-    // 8. Synthetic kawaii daily leaderboard preview
+    // 8. 9router update available preview
+    let update_preview = nine_router_bot::messages::update_available_alert("0.5.95", "0.5.96");
+    previews.push(format!("<i>[PREVIEW ONLY]</i>\n\n{update_preview}"));
+
+    // 9. Synthetic kawaii daily leaderboard preview
     let synthetic_stats = UsageStats {
         total_requests: 1850,
         total_prompt_tokens: 104_500_000,

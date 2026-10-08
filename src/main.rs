@@ -108,7 +108,17 @@ async fn run_monitor_loop(bot: Bot, client: Arc<NineRouterClient>, config: Arc<C
         let auth_hours = config.auth_token_hours_remaining(now);
         alerts.extend(engine.check_auth_token_expiry(auth_hours));
 
-        // 3. Fetch connections
+        // 3. Check for 9router updates
+        match client.fetch_version().await {
+            Ok(ver) => {
+                alerts.extend(engine.check_update(&ver));
+            }
+            Err(e) => {
+                warn!("Failed to fetch 9router version: {e}");
+            }
+        }
+
+        // 4. Fetch connections
         match client.fetch_connections().await {
             Ok(conns) => {
                 // Check Codex accounts for 401/403 errors (ignoring 429)
