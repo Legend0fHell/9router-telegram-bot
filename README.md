@@ -6,16 +6,29 @@ A requests-only Telegram notification bot for [9router](https://github.com/decol
 
 The bot continuously monitors your 9router deployment and delivers real-time notifications to your Telegram channel or chat:
 
+On every startup, the bot sends an **ARMED** message to the configured chat before starting monitoring and command polling. Startup fails if that message cannot be delivered; it confirms notification access, not upstream service health.
+
 - 🚨 **Serving Gateway Availability (`/v1`)**:
   Alerts when `GET /v1` is unreachable or returns a server error (5xx), and sends a recovery notification. Without an API key, HTTP 401 proves reachability only—not successful inference. Checks run once per polling cycle, including quota-fetch time.
+  Down alerts show the first observed incident time in **UTC+7**. Recovery shows incident time, resolve time, and elapsed incident duration (`h m s`). Times reflect polling observations, not the exact upstream outage boundaries; incident tracking is in memory and restarts begin a fresh observation.
 - ⏳ **Weekly Quota Waste Warning**:
   Monitors enabled accounts returned by the usage-eligible providers API, across all pages. With **>30% remaining** and less than **24 hours**, **12 hours**, or **3 hours** until reset, warnings fire once per tier per account/quota/cycle. Reset timestamps within 60 seconds share an anchored cycle to tolerate upstream timestamp jitter; unlimited quotas are excluded.
+  Quota warning reset deadlines are displayed in **UTC+7** (Asia/Ho_Chi_Minh); threshold calculations still use UTC instants.
 - 🔑 **Codex Account Authentication Errors**:
   Alerts on Codex accounts returning `401 Unauthorized` or `403 Forbidden` (explicitly ignoring temporary `429 Too Many Requests` rate limits). Notifies when cleared.
 - 🎁 **Banked Reset Notifications**:
   Detects and alerts whenever an account receives an additional banked reset credit (`availableCount` increases).
 - ⚠️ **Dashboard Auth Token Expiration**:
   Reads the unverified JWT `exp` claim for an informational warning when less than **3 hours** remain. Dashboard sessions normally last 24 hours. Rotate `ROUTER_AUTH_TOKEN` and restart the bot; automatic login is not implemented.
+- 🏆 **Daily usage leaderboard**:
+  At **00:00 Asia/Ho_Chi_Minh (UTC+7)**, independently of quota polling, send the top **5 API keys**, **5 models**, and **5 accounts** ranked by recorded request count. Key rows combine model/provider buckets; model rows combine providers; account rows combine models by connection ID. Only key display names are shown, never credentials.
+
+  Each entry has a ranked name, abbreviated requests (`292K`, `4.5M`), estimated USD cost, and aligned monospace **In / Cache / Out** columns. Telegram has no native message tables; names stay outside the compact numeric rows to avoid wide tables on mobile. **In includes Cache** (cached input is a subset, not extra tokens). Costs come from 9router’s recorded pricing estimates, not subscription charges; absent pricing may understate costs. The summary shows the same separate token totals and estimated cost.
+
+  Uses `/api/usage/stats?period=24h`: the upstream rolling 24-hour window at fetch time, approximately the previous local day when fetched at midnight. Recorded requests include all statuses upstream includes, not exclusively successful calls. No timezone dependency or VPS `TZ` setting is needed because UTC+7 has no DST.
+
+  The bot must be running and dashboard authentication valid at midnight. On restart it waits for the next midnight; there is no missed-day backfill, persistent schedule state or automatic retry of failed daily reports. Failures are logged. The live preview exercised aggregation and Telegram delivery; midnight timing is covered by deterministic boundary tests.
+
 
 ## Interactive Bot Commands
 
@@ -26,7 +39,11 @@ The bot continuously monitors your 9router deployment and delivers real-time not
 - `/ping` — Measure latency and ping the `/v1` endpoint on demand.
 - `/help` — Display command help menu.
 
-Commands only respond in `TELEGRAM_CHAT_ID`; in a group, every member of that configured group can use them. Replies are plain text, split into Unicode-safe messages without truncating accounts or interpreting upstream strings as markup.
+Commands only respond in `TELEGRAM_CHAT_ID`; in a group, every member of that configured group can use them. Messages use HTML headings, bold metrics, code emails and expandable error details. Weekly alerts include a ten-cell remaining-quota bar and UTC+7 reset deadline. Quota/Usage URL buttons are derived from `ROUTER_URL`, never credentials.
+
+Notifications, startup announcements and daily leaderboards include kawaii reactions and Unicode kaomoji (worried for failures, celebratory for recovery). Severity labels, metrics, timestamps and escaped upstream error details remain technical and unchanged; the style does not affect alert rules or delivery.
+
+Dynamic display fields are HTML-escaped, flattened to one line and limited to 240 characters with a visible ellipsis. Longer replies split at complete, balanced lines; no HTML tags or entities are cut. Accounts are not truncated. No new dependencies or newer Telegram rich-message APIs are required.
 
 Deduplication is in memory and resets on restart. Failed notification sends are logged, not retried; there is no durable queue or exactly-once delivery. Monitor logs also report dashboard/usage fetch failures; these failures are not separate Telegram alerts.
 

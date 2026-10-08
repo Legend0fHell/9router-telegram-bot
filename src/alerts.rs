@@ -24,6 +24,8 @@ impl QuotaWarningTier {
 pub struct AlertState {
     /// Last v1 ping state (None on first startup, Some(true) for UP, Some(false) for DOWN)
     pub last_v1_up: Option<bool>,
+    /// First observed failure in the current incident; cleared on recovery.
+    pub v1_down_since: Option<DateTime<Utc>>,
     /// Set of codex connection IDs currently in 401/403 error state
     pub codex_error_accounts: HashSet<String>,
     /// One stable reset timestamp and highest notified tier per account and quota.
@@ -46,6 +48,10 @@ impl AlertEngine {
 
     /// Check v1 health and emit alert on failure or recovery
     pub fn check_v1_health(&mut self, status: &HealthStatus) -> Vec<String> {
+        self.check_v1_health_at(status, Utc::now())
+    }
+
+    fn check_v1_health_at(&mut self, status: &HealthStatus, now: DateTime<Utc>) -> Vec<String> {
         let mut alerts = Vec::new();
         let is_up = match status {
             HealthStatus::Up(_) => true,
@@ -57,9 +63,12 @@ impl AlertEngine {
                 // Initial baseline check
                 self.state.last_v1_up = Some(is_up);
                 if !is_up {
+                    self.state.v1_down_since = Some(now);
                     if let HealthStatus::Down(err) = status {
                         alerts.push(format!(
-                            "🚨 [ALERT] 9router /v1 serving endpoint is DOWN!\nDetails: {err}"
+                            "🚨 <b>[ALERT] 9router /v1 serving endpoint is DOWN!</b>\n<i>Eeh?! Connection trouble, senpai~ (っ˘̩╭╮˘̩)っ</i>\n• Incident time: <b>{}</b>\n<blockquote expandable>{}</blockquote>",
+                            local_time(now),
+                            crate::bot::display(&err.replace(['\r', '\n'], " "))
                         ));
                     }
                 }
@@ -68,12 +77,15 @@ impl AlertEngine {
                 if prev_up && !is_up {
                     // Endpoint went down
                     self.state.last_v1_up = Some(false);
+                    self.state.v1_down_since = Some(now);
                     let detail = match status {
                         HealthStatus::Down(err) => err.as_str(),
                         _ => "Unknown error",
                     };
                     alerts.push(format!(
-                        "🚨 [ALERT] 9router /v1 serving endpoint has gone DOWN!\nDetails: {detail}"
+                        "🚨 <b>[ALERT] 9router /v1 serving endpoint has gone DOWN!</b>\n<i>Eeh?! Connection trouble, senpai~ (っ˘̩╭╮˘̩)っ</i>\n• Incident time: <b>{}</b>\n<blockquote expandable>{}</blockquote>",
+                        local_time(now),
+                        crate::bot::display(&detail.replace(['\r', '\n'], " "))
                     ));
                 } else if !prev_up && is_up {
                     // Endpoint recovered
@@ -82,8 +94,11 @@ impl AlertEngine {
                         HealthStatus::Up(c) => *c,
                         _ => 200,
                     };
+                    let started = self.state.v1_down_since.take().unwrap_or(now);
+                    let seconds = (now - started).num_seconds().max(0);
                     alerts.push(format!(
-                        "✅ [RESOLVED] 9router /v1 serving endpoint is back UP (HTTP {code})!"
+                        "✅ <b>[RESOLVED] 9router /v1 serving endpoint is back UP (HTTP {code})!</b>\n<i>Yatta! We're connected again, nya~ (ﾉ◕ヮ◕)ﾉ*:･ﾟ✧</i>\n• Incident time: <b>{}</b>\n• Resolve time: <b>{}</b>\n• Incident duration: <b>{}h {}m {}s</b>",
+                        local_time(started), local_time(now), seconds / 3600, seconds / 60 % 60, seconds % 60
                     ));
                 }
             }
@@ -121,10 +136,11 @@ impl AlertEngine {
                         .unwrap_or("401/403 Authentication Error");
 
                     alerts.push(format!(
-                        "🚨 [ALERT] Codex account authentication error (401/403)!\n• Account: {}\n• Email: {}\n• Error: {}",
-                        conn.display_name(),
-                        conn.email.as_deref().unwrap_or("N/A"),
-                        err_desc
+                        "🚨 <b>[ALERT] Codex account authentication error (401/403)!</b>\n<i>A-ano... this account needs attention~ (；ω；)</i>\n• Account: <b>{}</b> ({})\n• Email: <code>{}</code>\n<blockquote expandable>{}</blockquote>",
+                        crate::bot::display(&conn.display_name()),
+                        crate::bot::display(&conn.provider),
+                        crate::bot::display(conn.email.as_deref().unwrap_or("N/A")),
+                        crate::bot::display(&err_desc.replace(['\r', '\n'], " "))
                     ));
                 }
             }
@@ -133,8 +149,10 @@ impl AlertEngine {
         for recovered_id in self.state.codex_error_accounts.difference(&current_errored) {
             if let Some(conn) = connections.iter().find(|c| c.id == *recovered_id) {
                 alerts.push(format!(
-                    "✅ [RESOLVED] Codex account {} 401/403 error has cleared!",
-                    conn.display_name()
+                    "✅ <b>[RESOLVED] Codex account {} 401/403 error has cleared!</b>\n<i>Yatta! Authentication trouble cleared~ (｡•̀ᴗ-)✧</i>\n• Provider: {}\n• Email: <code>{}</code>",
+                    crate::bot::display(&conn.display_name()),
+                    crate::bot::display(&conn.provider),
+                    crate::bot::display(conn.email.as_deref().unwrap_or("N/A"))
                 ));
             }
         }
@@ -213,15 +231,20 @@ impl AlertEngine {
                         QuotaWarningTier::LessThan12h => "⚠️",
                         QuotaWarningTier::LessThan24h => "⏳",
                     };
+                    let filled = (remaining_pct.clamp(0.0, 100.0) / 10.0).round() as usize;
 
                     alerts.push(format!(
-                        "{emoji} [QUOTA WARNING] Account weekly quota > 30% expiring soon ({tier_label})!\n• Account: {} ({})\n• Quota: {}\n• Remaining: {:.1}%\n• Time to reset: {:.1} hours",
-                        conn.display_name(),
-                        conn.provider,
-                        quota_name,
+                        "{emoji} <b>[QUOTA WARNING] Weekly quota expiring soon ({tier_label})!</b>\n<i>Ara ara~ reset time is getting close! (｡•́︿•̀｡)</i>\n• Account: <b>{}</b> ({})\n• Email: <code>{}</code>\n• Quota: <b>{}</b>\n• Remaining: <code>{}{}</code> <b>{:.1}%</b>\n• Time to reset: <b>{:.1} hours</b>\n• Reset: <b>{}</b>\n<i>Use the remaining quota before reset, senpai~ Ganbatte! (ง •̀ω•́)ง</i>",
+                        crate::bot::display(&conn.display_name()),
+                        crate::bot::display(&conn.provider),
+                        crate::bot::display(conn.email.as_deref().unwrap_or("N/A")),
+                        crate::bot::display(quota_name),
+                        &"██████████"[..filled * '█'.len_utf8()],
+                        &"░░░░░░░░░░"[filled * '░'.len_utf8()..],
                         remaining_pct,
                         hours_left,
-                        tier_label = tier.label()
+                        local_time(cycle.0),
+                        tier_label = crate::bot::display(tier.label())
                     ));
                 }
             }
@@ -243,9 +266,10 @@ impl AlertEngine {
                 Some(&prev_count) if current_count > prev_count => {
                     let diff = current_count - prev_count;
                     alerts.push(format!(
-                        "🎁 [NOTICE] Additional banked reset received!\n• Account: {} ({})\n• Banked resets: {} ➔ {} (+{diff})",
-                        conn.display_name(),
-                        conn.provider,
+                        "🎁 <b>[NOTICE] Additional banked reset received!</b>\n<i>Sugoi! A little reset gift, nya~ (ﾉ´ヮ`)ﾉ*:･ﾟ✧</i>\n• Account: <b>{}</b> ({})\n• Email: <code>{}</code>\n• Banked resets: <b>{} ➔ {} (+{diff})</b>",
+                        crate::bot::display(&conn.display_name()),
+                        crate::bot::display(&conn.provider),
+                        crate::bot::display(conn.email.as_deref().unwrap_or("N/A")),
                         prev_count,
                         current_count
                     ));
@@ -267,7 +291,7 @@ impl AlertEngine {
             if hours < 3.0 && !self.state.auth_token_expiry_alerted {
                 self.state.auth_token_expiry_alerted = true;
                 alerts.push(format!(
-                    "⚠️ [NOTICE] 9router dashboard auth token expires in {:.1} hours!\nPlease refresh ROUTER_AUTH_TOKEN.",
+                    "⚠️ <b>[NOTICE] 9router dashboard auth token expires soon!</b>\n<i>A-ano... please refresh it before it expires~ (´• ω •`)</i>\n• Time remaining: <b>{:.1} hours</b>\nPlease refresh <code>ROUTER_AUTH_TOKEN</code>, senpai~",
                     hours.max(0.0)
                 ));
             } else if hours >= 3.0 {
@@ -276,6 +300,12 @@ impl AlertEngine {
         }
         alerts
     }
+}
+
+fn local_time(time: DateTime<Utc>) -> String {
+    time.with_timezone(&chrono::FixedOffset::east_opt(7 * 3600).unwrap())
+        .format("%Y-%m-%d %H:%M:%S UTC+7")
+        .to_string()
 }
 
 /// Helper to determine if a quota entry is weekly
@@ -334,6 +364,32 @@ mod tests {
         assert_eq!(engine.check_v1_health(&HealthStatus::Up(200)).len(), 1);
         assert!(engine.check_v1_health(&HealthStatus::Up(200)).is_empty());
         assert_eq!(AlertEngine::new().check_v1_health(&down).len(), 1);
+    }
+
+    #[test]
+    fn incident_duration_starts_at_first_failure_and_resets_after_recovery() {
+        let mut engine = AlertEngine::new();
+        let down = HealthStatus::Down("network".into());
+        let first = engine.check_v1_health_at(&down, now());
+        assert!(first[0].contains("2026-10-08 19:00:00 UTC+7"));
+        assert!(engine
+            .check_v1_health_at(&down, now() + Duration::minutes(2))
+            .is_empty());
+        let resolved =
+            engine.check_v1_health_at(&HealthStatus::Up(200), now() + Duration::seconds(3665));
+        assert!(resolved[0].contains("2026-10-08 20:01:05 UTC+7"));
+        assert!(resolved[0].contains("1h 1m 5s"));
+        assert!(engine.state.v1_down_since.is_none());
+        engine.check_v1_health_at(&down, now() + Duration::hours(2));
+        let resolved = engine.check_v1_health_at(
+            &HealthStatus::Up(200),
+            now() + Duration::hours(2) + Duration::seconds(5),
+        );
+        assert!(resolved[0].contains("0h 0m 5s"));
+        assert_eq!(
+            local_time(now() + Duration::hours(6)),
+            "2026-10-09 01:00:00 UTC+7"
+        );
     }
 
     #[test]
