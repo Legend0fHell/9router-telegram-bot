@@ -46,6 +46,7 @@ On every startup, the bot sends an **ARMED** message to the configured chat befo
 Commands only respond in `TELEGRAM_CHAT_ID`; in a group, every member of that configured group can use them. Messages use HTML headings, bold metrics, code emails and expandable error details. Weekly alerts include a ten-cell remaining-quota bar and UTC+7 reset deadline. Quota/Usage URL buttons are derived from `ROUTER_URL`, never credentials.
 
 All notification wording, kawaii tone, and kaomoji live in a dedicated language module at `src/messages.rs`. You can customize greetings, alert headers, reactions, and templates in this single location without touching alert engine logic or Telegram dispatching. Severity labels, metrics, timestamps, and escaped upstream error details remain technical and unchanged.
+Quota tier labels are HTML-escaped in the shared formatter (`< 3 hours` becomes `&lt; 3 hours`), so Telegram does not interpret the threshold as a tag.
 
 Dynamic display fields are HTML-escaped, flattened to one line and limited to 240 characters with a visible ellipsis. Longer replies split at complete, balanced lines; no HTML tags or entities are cut. Accounts are not truncated. No new dependencies or newer Telegram rich-message APIs are required.
 

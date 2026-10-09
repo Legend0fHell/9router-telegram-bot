@@ -75,6 +75,7 @@ pub fn codex_resolved_alert(cleared_items: &[(&str, &str, &str)]) -> String {
 }
 
 pub fn quota_warning_alert(tier_label: &str, emoji: &str, items: &[String]) -> String {
+    let tier_label = display(tier_label);
     let heading = if items.len() == 1 {
         format!("{emoji} <b>[QUOTA WARNING] Weekly quota expiring soon ({tier_label})!</b>")
     } else {

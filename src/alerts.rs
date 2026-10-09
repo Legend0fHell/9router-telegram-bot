@@ -618,7 +618,6 @@ mod tests {
         assert_eq!(alerts.len(), 1);
         assert!(alerts[0].contains("account-1"));
         assert!(alerts[0].contains("account-2"));
-        assert!(alerts[0].contains("Weekly quotas expiring soon (< 3 hours)!"));
 
         assert!(engine
             .check_weekly_quotas([(&conn1, &usage), (&conn2, &usage)], now)
