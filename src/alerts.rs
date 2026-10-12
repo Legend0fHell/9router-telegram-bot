@@ -26,6 +26,7 @@ pub struct AlertState {
     pub last_v1_up: Option<bool>,
     /// First observed failure in the current incident; cleared on recovery.
     pub v1_down_since: Option<DateTime<Utc>>,
+    pub v1_failures: u8,
     /// Set of codex connection IDs currently in 401/403 error state
     pub codex_error_accounts: HashSet<String>,
     /// One stable reset timestamp and highest notified tier per account and quota.
@@ -53,64 +54,51 @@ impl AlertEngine {
         self.check_v1_health_at(status, Utc::now())
     }
 
-    fn check_v1_health_at(&mut self, status: &HealthStatus, now: DateTime<Utc>) -> Vec<String> {
-        let mut alerts = Vec::new();
-        let is_up = match status {
-            HealthStatus::Up(_) => true,
-            HealthStatus::Down(_) => false,
-        };
+    pub fn health_poll_delay(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(if self.state.v1_failures > 0 { 10 } else { 60 })
+    }
 
-        match self.state.last_v1_up {
-            None => {
-                // Initial baseline check
-                self.state.last_v1_up = Some(is_up);
-                if !is_up {
+    fn check_v1_health_at(&mut self, status: &HealthStatus, now: DateTime<Utc>) -> Vec<String> {
+        match status {
+            HealthStatus::Down(error) => {
+                if self.state.v1_failures == 0 {
                     self.state.v1_down_since = Some(now);
-                    if let HealthStatus::Down(err) = status {
-                        alerts.push(crate::messages::v1_down_alert(&local_time(now), err, true));
-                    }
                 }
+                self.state.v1_failures = self.state.v1_failures.saturating_add(1);
+                if self.state.v1_failures < 3 || self.state.last_v1_up == Some(false) {
+                    return Vec::new();
+                }
+                let initial = self.state.last_v1_up.is_none();
+                self.state.last_v1_up = Some(false);
+                vec![crate::messages::v1_down_alert(
+                    &local_time(self.state.v1_down_since.unwrap_or(now)),
+                    error,
+                    initial,
+                )]
             }
-            Some(prev_up) => {
-                if prev_up && !is_up {
-                    // Endpoint went down
-                    self.state.last_v1_up = Some(false);
-                    self.state.v1_down_since = Some(now);
-                    let detail = match status {
-                        HealthStatus::Down(err) => err.as_str(),
-                        _ => "Unknown error",
-                    };
-                    alerts.push(crate::messages::v1_down_alert(
-                        &local_time(now),
-                        detail,
-                        false,
-                    ));
-                } else if !prev_up && is_up {
-                    // Endpoint recovered
-                    self.state.last_v1_up = Some(true);
-                    let code = match status {
-                        HealthStatus::Up(c) => *c,
-                        _ => 200,
-                    };
-                    let started = self.state.v1_down_since.take().unwrap_or(now);
-                    let seconds = (now - started).num_seconds().max(0);
-                    let duration_str = format!(
+            HealthStatus::Up(code) => {
+                self.state.v1_failures = 0;
+                let started = self.state.v1_down_since.take();
+                let recovered = self.state.last_v1_up == Some(false);
+                self.state.last_v1_up = Some(true);
+                if !recovered {
+                    return Vec::new();
+                }
+                let started = started.unwrap_or(now);
+                let seconds = (now - started).num_seconds().max(0);
+                vec![crate::messages::v1_resolved_alert(
+                    *code,
+                    &local_time(started),
+                    &local_time(now),
+                    &format!(
                         "{}h {}m {}s",
                         seconds / 3600,
                         seconds / 60 % 60,
                         seconds % 60
-                    );
-                    alerts.push(crate::messages::v1_resolved_alert(
-                        code,
-                        &local_time(started),
-                        &local_time(now),
-                        &duration_str,
-                    ));
-                }
+                    ),
+                )]
             }
         }
-
-        alerts
     }
 
     /// Check codex accounts for 401/403 errors (explicitly excluding 429).
@@ -477,22 +465,36 @@ mod tests {
     }
 
     #[test]
-    fn health_alerts_only_on_transitions_or_initial_failure() {
+    fn health_requires_three_consecutive_errors_and_retries_faster() {
         let mut engine = AlertEngine::new();
-        assert!(engine.check_v1_health(&HealthStatus::Up(200)).is_empty());
-        let down = HealthStatus::Down("<network & error>".into());
+        let down = HealthStatus::Down("network".into());
+        assert_eq!(engine.health_poll_delay().as_secs(), 60);
+        for _ in 0..2 {
+            assert!(engine.check_v1_health(&down).is_empty());
+        }
+        assert_eq!(engine.health_poll_delay().as_secs(), 10);
+        assert!(engine.check_v1_health(&HealthStatus::Up(401)).is_empty());
+        assert_eq!(engine.health_poll_delay().as_secs(), 60);
+        for _ in 0..2 {
+            assert!(engine.check_v1_health(&down).is_empty());
+        }
         assert_eq!(engine.check_v1_health(&down).len(), 1);
         assert!(engine.check_v1_health(&down).is_empty());
+        assert_eq!(engine.health_poll_delay().as_secs(), 10);
         assert_eq!(engine.check_v1_health(&HealthStatus::Up(200)).len(), 1);
         assert!(engine.check_v1_health(&HealthStatus::Up(200)).is_empty());
-        assert_eq!(AlertEngine::new().check_v1_health(&down).len(), 1);
+        assert_eq!(engine.health_poll_delay().as_secs(), 60);
     }
 
     #[test]
     fn incident_duration_starts_at_first_failure_and_resets_after_recovery() {
         let mut engine = AlertEngine::new();
         let down = HealthStatus::Down("network".into());
-        let first = engine.check_v1_health_at(&down, now());
+        assert!(engine.check_v1_health_at(&down, now()).is_empty());
+        assert!(engine
+            .check_v1_health_at(&down, now() + Duration::seconds(10))
+            .is_empty());
+        let first = engine.check_v1_health_at(&down, now() + Duration::seconds(20));
         assert!(first[0].contains("2026-10-08 19:00:00 UTC+7"));
         assert!(engine
             .check_v1_health_at(&down, now() + Duration::minutes(2))
@@ -503,6 +505,8 @@ mod tests {
         assert!(resolved[0].contains("1h 1m 5s"));
         assert!(engine.state.v1_down_since.is_none());
         engine.check_v1_health_at(&down, now() + Duration::hours(2));
+        engine.check_v1_health_at(&down, now() + Duration::hours(2) + Duration::seconds(1));
+        engine.check_v1_health_at(&down, now() + Duration::hours(2) + Duration::seconds(2));
         let resolved = engine.check_v1_health_at(
             &HealthStatus::Up(200),
             now() + Duration::hours(2) + Duration::seconds(5),

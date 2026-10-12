@@ -61,9 +61,8 @@ impl NineRouterClient {
         match req.send().await {
             Ok(resp) => {
                 let status = resp.status().as_u16();
-                // 200 OK or 401 Unauthorized (which requires API key) proves server process is UP.
-                // 5xx (500, 502 Bad Gateway, 503, 504) means serving endpoint is DOWN.
-                if status < 500 {
+                // An unauthenticated 401 is expected only when no serving API key is configured.
+                if resp.status().is_success() || (status == 401 && self.api_key.is_none()) {
                     HealthStatus::Up(status)
                 } else {
                     HealthStatus::Down(format!("HTTP {status}"))
@@ -341,6 +340,51 @@ mod tests {
         assert!(
             client.session.lock().await.retry_after.unwrap()
                 > Utc::now() + chrono::Duration::minutes(9)
+        );
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn health_counts_http_errors_except_expected_unauthenticated_401() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for status in [200, 404, 503, 401, 401] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = [0; 4096];
+                let count = stream.read(&mut request).unwrap();
+                assert!(count > 0);
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} Test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
+            }
+        });
+        let client =
+            NineRouterClient::new(format!("http://{address}"), "password".into(), None).unwrap();
+        assert_eq!(client.check_v1_health().await, HealthStatus::Up(200));
+        assert_eq!(
+            client.check_v1_health().await,
+            HealthStatus::Down("HTTP 404".into())
+        );
+        assert_eq!(
+            client.check_v1_health().await,
+            HealthStatus::Down("HTTP 503".into())
+        );
+        assert_eq!(client.check_v1_health().await, HealthStatus::Up(401));
+        let authenticated = NineRouterClient::new(
+            format!("http://{address}"),
+            "password".into(),
+            Some("key".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            authenticated.check_v1_health().await,
+            HealthStatus::Down("HTTP 401".into())
         );
         server.join().unwrap();
     }

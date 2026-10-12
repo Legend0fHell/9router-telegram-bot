@@ -27,6 +27,9 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     // 2. Health alert DOWN preview
+    for _ in 0..2 {
+        engine.check_v1_health(&HealthStatus::Down("PREVIEW failure".into()));
+    }
     let down_alerts = engine.check_v1_health(&HealthStatus::Down(
         "PREVIEW: 502 Bad Gateway while reaching upstream service".into(),
     ));

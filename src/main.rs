@@ -45,6 +45,12 @@ async fn main() -> anyhow::Result<()> {
         run_monitor_loop(monitor_bot, monitor_client, monitor_config).await;
     });
 
+    tokio::spawn(run_health_loop(
+        bot.clone(),
+        Arc::clone(&client),
+        Arc::clone(&config),
+    ));
+
     let daily_bot = bot.clone();
     let daily_client = Arc::clone(&client);
     let daily_config = Arc::clone(&config);
@@ -86,6 +92,26 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn run_health_loop(bot: Bot, client: Arc<NineRouterClient>, config: Arc<Config>) {
+    let mut engine = AlertEngine::new();
+    loop {
+        let health = client.check_v1_health().await;
+        for alert in engine.check_v1_health(&health) {
+            if let Err(e) = send_formatted(
+                &bot,
+                ChatId(config.telegram_chat_id),
+                &alert,
+                &config.router_url,
+            )
+            .await
+            {
+                error!("Failed to deliver health alert: {e}");
+            }
+        }
+        tokio::time::sleep(engine.health_poll_delay()).await;
+    }
+}
+
 async fn run_monitor_loop(bot: Bot, client: Arc<NineRouterClient>, config: Arc<Config>) {
     let mut engine = AlertEngine::new();
     let chat_id = ChatId(config.telegram_chat_id);
@@ -98,10 +124,6 @@ async fn run_monitor_loop(bot: Bot, client: Arc<NineRouterClient>, config: Arc<C
 
     loop {
         let mut alerts = Vec::new();
-
-        // 1. Check /v1 endpoint serving health
-        let health = client.check_v1_health().await;
-        alerts.extend(engine.check_v1_health(&health));
 
         // Refresh before expiry even when no dashboard command is running.
         let login_failed = match client.refresh_session().await {
