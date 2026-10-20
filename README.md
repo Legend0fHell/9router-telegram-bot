@@ -12,10 +12,10 @@ On every startup, the bot sends an **ARMED** message to the configured chat befo
   Independently of five-minute quota polling, checks `GET /v1` every 60 seconds when healthy and every 10 seconds after a failure or while DOWN (delays after completed checks; no overlapping requests). Three consecutive network/timeout or unsuccessful HTTP responses (including 404) trigger DOWN, once per incident. HTTP 2xx resets the failure streak; HTTP 401 is accepted only without a configured API key, proving reachability rather than successful inference. One accepted response resolves a confirmed incident. Incident duration starts at the first failure, not the third confirming probe.
   Down alerts show the first observed incident time in **UTC+7**. Recovery shows incident time, resolve time, and elapsed incident duration (`h m s`). Times reflect polling observations, not the exact upstream outage boundaries; incident tracking is in memory and restarts begin a fresh observation.
 - ⏳ **Weekly Quota Waste Warning**:
-  Monitors enabled accounts returned by the usage-eligible providers API, across all pages. With **>30% remaining** and less than **24 hours**, **12 hours**, or **3 hours** until reset, warnings fire once per tier per account/quota/cycle. Reset timestamps within 60 seconds share an anchored cycle to tolerate upstream timestamp jitter; unlimited quotas are excluded. All accounts qualifying for the same warning tier within a polling cycle are batched into a single consolidated message.
+  Monitors enabled accounts returned by the usage-eligible providers API, across all pages, skipping `antigravity` accounts entirely. With **>20% remaining** and less than **24 hours**, **12 hours**, or **3 hours** until reset, warnings fire once per tier per account/quota/cycle. Reset timestamps within 60 seconds share an anchored cycle to tolerate upstream timestamp jitter; unlimited quotas are excluded. All accounts qualifying for the same warning tier within a polling cycle are batched into a single consolidated message.
   Quota warning reset deadlines are displayed in **UTC+7** (Asia/Ho_Chi_Minh); threshold calculations still use UTC instants.
 - 🎉 **Weekly Quota Reset Notice**:
-  Detects when an account's weekly quota cycle has reset (e.g. `resetAt` moves forward by $\ge 6$ hours). Batches all accounts that reset in the same polling cycle into a single celebratory message announcing the new reset deadline in **UTC+7**.
+  Detects when an account's weekly quota cycle has reset (e.g. `resetAt` moves forward by $\ge 6$ hours), excluding `antigravity` accounts. Batches all accounts that reset in the same polling cycle into a single celebratory message announcing the new reset deadline in **UTC+7**.
 - 🔑 **Codex Account Authentication Errors**:
   Alerts on Codex accounts returning `401 Unauthorized` or `403 Forbidden` (explicitly ignoring temporary `429 Too Many Requests` rate limits). Multiple errored or recovered accounts in the same polling cycle are batched into single consolidated messages.
 - 🎁 **Banked Reset Notifications**:
@@ -50,7 +50,7 @@ Quota tier labels are HTML-escaped in the shared formatter (`< 3 hours` becomes 
 
 Dynamic display fields are HTML-escaped, flattened to one line and limited to 240 characters with a visible ellipsis. Longer replies split at complete, balanced lines; no HTML tags or entities are cut. Accounts are not truncated. No new dependencies or newer Telegram rich-message APIs are required.
 
-Deduplication is in memory and resets on restart. Failed notification sends are logged, not retried; there is no durable queue or exactly-once delivery. Monitor logs also report dashboard/usage fetch failures; these failures are not separate Telegram alerts.
+Usage is fetched concurrently for monitored and command-listed accounts, capped at 16 in-flight requests to bound load on 9router. Deduplication is in memory and resets on restart. Failed notification sends are logged, not retried; there is no durable queue or exactly-once delivery. Monitor logs also report dashboard/usage fetch failures; these failures are not separate Telegram alerts.
 
 ## Configuration
 

@@ -181,7 +181,8 @@ impl AlertEngine {
         alerts
     }
 
-    /// Check weekly quotas across accounts for >30% remaining quota with <24h, <12h, <3h reset warnings.
+    /// Check weekly quotas across accounts for >20% remaining quota with <24h, <12h, <3h reset warnings.
+    /// Antigravity accounts are skipped entirely.
     /// Batches warnings of the same tier into a single consolidated message.
     pub fn check_weekly_quotas<'a, I>(&mut self, entries: I, now: DateTime<Utc>) -> Vec<String>
     where
@@ -191,6 +192,9 @@ impl AlertEngine {
         let mut tier_items: HashMap<QuotaWarningTier, Vec<String>> = HashMap::new();
         let mut reset_events: Vec<(&Connection, &str, String)> = Vec::new();
         for (conn, usage) in entries {
+            if conn.provider.eq_ignore_ascii_case("antigravity") {
+                continue;
+            }
             let quotas = match &usage.quotas {
                 Some(q) => q,
                 None => continue,
@@ -240,7 +244,7 @@ impl AlertEngine {
                 }
 
                 let remaining_pct = match quota_detail.remaining_pct() {
-                    Some(p) if p > 30.0 => p,
+                    Some(p) if p > 20.0 => p,
                     _ => continue,
                 };
                 let time_left = cycle.0.signed_duration_since(now);
@@ -630,17 +634,17 @@ mod tests {
     }
 
     #[test]
-    fn weekly_remaining_must_be_strictly_above_thirty_and_limited() {
+    fn weekly_remaining_must_be_strictly_above_twenty_and_limited() {
         let mut engine = AlertEngine::new();
         let conn = connection();
         let now = now();
         let reset = now + Duration::hours(2);
-        for remaining in [0.0, 29.9, 30.0, f64::NAN] {
+        for remaining in [0.0, 19.9, 20.0, f64::NAN] {
             assert!(engine
                 .check_weekly_quotas([(&conn, &weekly_usage(reset, remaining))], now)
                 .is_empty());
         }
-        let mut usage = weekly_usage(reset, 30.0001);
+        let mut usage = weekly_usage(reset, 20.0001);
         usage
             .quotas
             .as_mut()
@@ -659,6 +663,23 @@ mod tests {
             .unwrap()
             .unlimited = Some(false);
         assert_eq!(engine.check_weekly_quotas([(&conn, &usage)], now).len(), 1);
+    }
+
+    #[test]
+    fn antigravity_accounts_never_emit_quota_warnings_or_resets() {
+        let mut engine = AlertEngine::new();
+        let now = now();
+        let mut conn = connection();
+        conn.provider = "antigravity".into();
+        let first = weekly_usage(now + Duration::hours(2), 60.0);
+        assert!(engine
+            .check_weekly_quotas([(&conn, &first)], now)
+            .is_empty());
+        let next = weekly_usage(now + Duration::days(7), 60.0);
+        assert!(engine
+            .check_weekly_quotas([(&conn, &next)], now + Duration::hours(2))
+            .is_empty());
+        assert!(engine.state.quota_notified_tiers.is_empty());
     }
 
     #[test]

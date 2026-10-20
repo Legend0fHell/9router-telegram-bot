@@ -152,21 +152,26 @@ async fn run_monitor_loop(bot: Bot, client: Arc<NineRouterClient>, config: Arc<C
                 alerts.extend(engine.check_codex_errors(&conns));
 
                 // Check quota & banked resets for active connections
-                let mut usage_batch = Vec::new();
-                for conn in conns.iter().filter(|c| c.is_active.unwrap_or(true)) {
-                    match client.fetch_usage(&conn.id).await {
-                        Ok(usage) => {
-                            usage_batch.push((conn, usage));
-                        }
+                let active: Vec<&Connection> = conns
+                    .iter()
+                    .filter(|c| c.is_active.unwrap_or(true))
+                    .collect();
+                let ids: Vec<String> = active.iter().map(|c| c.id.clone()).collect();
+                let usage_batch: Vec<(&Connection, UsageResponse)> = active
+                    .into_iter()
+                    .zip(client.fetch_usage_batch(&ids).await)
+                    .filter_map(|(conn, result)| match result {
+                        Ok(usage) => Some((conn, usage)),
                         Err(e) => {
                             warn!(
                                 "Failed to fetch usage for {} ({}): {e}",
                                 conn.display_name(),
                                 conn.id
                             );
+                            None
                         }
-                    }
-                }
+                    })
+                    .collect();
 
                 let refs: Vec<(&Connection, &UsageResponse)> =
                     usage_batch.iter().map(|(c, u)| (*c, u)).collect();

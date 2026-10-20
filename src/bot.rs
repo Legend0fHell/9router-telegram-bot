@@ -73,12 +73,14 @@ pub async fn handle_command(
         },
         Command::Codex => match client.fetch_connections().await {
             Ok(conns) => {
-                let mut sections = vec!["🔐 <b>Codex accounts</b>".into()];
-                for c in conns
+                let codex: Vec<&Connection> = conns
                     .iter()
                     .filter(|c| c.provider.eq_ignore_ascii_case("codex"))
-                {
-                    let credits = match client.fetch_usage(&c.id).await {
+                    .collect();
+                let ids: Vec<String> = codex.iter().map(|c| c.id.clone()).collect();
+                let mut sections = vec!["🔐 <b>Codex accounts</b>".into()];
+                for (c, usage) in codex.into_iter().zip(client.fetch_usage_batch(&ids).await) {
+                    let credits = match usage {
                         Ok(usage) => usage
                             .reset_credits
                             .and_then(|r| r.available_count)
@@ -97,10 +99,15 @@ pub async fn handle_command(
         },
         Command::Quota => match client.fetch_connections().await {
             Ok(conns) => {
+                let active: Vec<&Connection> = conns
+                    .iter()
+                    .filter(|c| c.is_active.unwrap_or(true))
+                    .collect();
+                let ids: Vec<String> = active.iter().map(|c| c.id.clone()).collect();
                 let mut sections = vec!["📈 <b>Active account quotas</b>".into()];
-                for c in conns.iter().filter(|c| c.is_active.unwrap_or(true)) {
+                for (c, usage) in active.into_iter().zip(client.fetch_usage_batch(&ids).await) {
                     let mut lines = vec![account_text(c)];
-                    match client.fetch_usage(&c.id).await {
+                    match usage {
                         Ok(usage) => match usage.quotas {
                             Some(quotas) if !quotas.is_empty() => {
                                 for (name, q) in quotas {

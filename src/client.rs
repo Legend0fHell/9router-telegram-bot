@@ -207,6 +207,28 @@ impl NineRouterClient {
             .context("Failed to fetch usage")
     }
 
+    /// Fetch usage for connection IDs, keeping at most 16 requests in flight.
+    pub async fn fetch_usage_batch(&self, connection_ids: &[String]) -> Vec<Result<UsageResponse>> {
+        let mut results = Vec::with_capacity(connection_ids.len());
+        // shortcut: chunks serialize, so one slow account delays its chunk's successors; use a semaphore if that matters.
+        for chunk in connection_ids.chunks(16) {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|connection_id| {
+                    let client = self.clone();
+                    let connection_id = connection_id.clone();
+                    tokio::spawn(async move { client.fetch_usage(&connection_id).await })
+                })
+                .collect();
+            for handle in handles {
+                results.push(handle.await.unwrap_or_else(|error| {
+                    Err(anyhow::Error::new(error).context("Usage request task failed"))
+                }));
+            }
+        }
+        results
+    }
+
     pub async fn fetch_usage_stats(&self) -> Result<crate::leaderboard::UsageStats> {
         self.get_dashboard_json(&format!("{}/api/usage/stats?period=24h", self.base_url))
             .await
@@ -275,6 +297,63 @@ mod tests {
         let legacy = client.fetch_connections().await.unwrap();
         assert_eq!(legacy.len(), 1);
         assert_eq!(legacy[0].id, "legacy");
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn usage_batch_keeps_sixteen_requests_in_flight_and_preserves_order() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let in_flight = StdArc::new(AtomicUsize::new(0));
+        let peak = StdArc::new(AtomicUsize::new(0));
+        let server = std::thread::spawn({
+            let in_flight = StdArc::clone(&in_flight);
+            let peak = StdArc::clone(&peak);
+            move || {
+                for _ in 0..20 {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let in_flight = StdArc::clone(&in_flight);
+                    let peak = StdArc::clone(&peak);
+                    std::thread::spawn(move || {
+                        let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                        peak.fetch_max(now, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_millis(50));
+                        let mut request = [0; 4096];
+                        let count = stream.read(&mut request).unwrap_or(0);
+                        let request = String::from_utf8_lossy(&request[..count]).to_string();
+                        let id = request
+                            .split("/api/usage/")
+                            .nth(1)
+                            .and_then(|rest| rest.split_whitespace().next())
+                            .unwrap_or_default()
+                            .to_string();
+                        in_flight.fetch_sub(1, Ordering::SeqCst);
+                        let body = format!(r#"{{"quotas":{{"{id}":{{}}}}}}"#);
+                        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                    });
+                }
+            }
+        });
+        let client =
+            NineRouterClient::new(format!("http://{address}"), "synthetic".into(), None).unwrap();
+        {
+            let mut session = client.session.lock().await;
+            session.cookie = Some(HeaderValue::from_static("auth_token=synthetic"));
+            session.expires = Some(Utc::now() + chrono::Duration::hours(24));
+        }
+        let ids: Vec<String> = (0..20).map(|index| format!("id-{index}")).collect();
+        let results = client.fetch_usage_batch(&ids).await;
+        assert_eq!(results.len(), 20);
+        for (index, result) in results.iter().enumerate() {
+            let quotas = result.as_ref().unwrap().quotas.as_ref().unwrap();
+            assert_eq!(quotas.keys().next().unwrap(), &format!("id-{index}"));
+        }
+        let peak = peak.load(Ordering::SeqCst);
+        assert!(peak <= 16, "observed {peak} concurrent usage requests");
+        assert!(peak > 1, "observed {peak} concurrent usage requests");
         server.join().unwrap();
     }
 
